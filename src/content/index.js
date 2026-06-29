@@ -1,10 +1,12 @@
 /**
  * Content script — hover any text to translate.
  *
- * Two visual elements, both fixed-positioned at the document root:
- *   - The translation popup (.pt-popup) with the translated text.
- *   - The provider badge (.pt-popup__provider), docked directly
- *     above the popup's top edge with a small gap.
+ * Visual model: a single fixed-positioned popup (.pt-popup) that
+ * holds both the provider chip and the translated text. The chip
+ * sits inside the popup at the top, so the two are always glued
+ * together. The popup's height grows naturally with the number of
+ * lines in the translation; the layout is flex column with no
+ * fixed height.
  *
  * Hover flow:
  *   1. document.caretRangeFromPoint finds the text node under the
@@ -16,15 +18,15 @@
  *      request fires in parallel.
  *   3. When the response arrives, the skeleton is cross-faded out
  *      and the real text fades in (CSS opacity transition). The
- *      popup keeps the same dimensions so it never jumps.
+ *      provider chip fades in too. The popup's natural size grows
+ *      with the number of text lines.
  *   4. Moving to a different text hides the popup right away; any
  *      in-flight response for the old text is dropped.
  *
  * Positioning:
- *   Both elements are updated on every mousemove via
- *   requestAnimationFrame. The popup sits above the cursor, centered
- *   horizontally. The provider badge is anchored to the popup's
- *   top edge, sitting just above it with a small gap.
+ *   The popup is updated on every mousemove via
+ *   requestAnimationFrame. It sits above the cursor, centered
+ *   horizontally, with a 14px gap from the cursor.
  */
 
 import "./popup.css";
@@ -36,9 +38,7 @@ const MIN_TEXT_LEN = 2;
 const MAX_TEXT_LEN = 500;
 const POPUP_OFFSET_Y = 14;
 const POPUP_GUTTER = 8;
-const PROVIDER_GAP = 12;
 const POPUP_ID = "__pt_popup_root__";
-const PROVIDER_ID = "__pt_popup_provider__";
 
 /** @type {{sl: string, tl: string, hoverEnabled: boolean, theme: 'light'|'dark'|'system'}} */
 let settings = {
@@ -58,11 +58,6 @@ let pendingPos = null;
 let rafId = 0;
 let popupW = 320;
 let popupH = 60;
-let providerW = 60;
-let providerH = 18;
-/** Cached current visible height so the popup doesn't jump when
- *  the skeleton is replaced with the real translation. */
-let lockedH = 0;
 
 console.log("[Popup Translator] content script loaded");
 
@@ -76,32 +71,24 @@ function getPopup() {
   root.setAttribute("role", "tooltip");
   root.setAttribute("aria-hidden", "true");
 
-  const body = document.createElement("div");
-  body.className = "pt-popup__body";
-  root.appendChild(body);
+  const provider = document.createElement("span");
+  provider.className = "pt-popup__provider";
+  provider.textContent = "";
+  root.appendChild(provider);
+
+  const trans = document.createElement("div");
+  trans.className = "pt-popup__trans";
+  trans.textContent = " ";
+  root.appendChild(trans);
 
   (document.body || document.documentElement).appendChild(root);
   return root;
-}
-
-function getProvider() {
-  let p = document.getElementById(PROVIDER_ID);
-  if (p) return p;
-  p = document.createElement("span");
-  p.id = PROVIDER_ID;
-  p.className = "pt-popup__provider";
-  p.textContent = "";
-  (document.body || document.documentElement).appendChild(p);
-  return p;
 }
 
 function readSizes() {
   const popup = getPopup();
   popupW = popup.offsetWidth || popupW || 320;
   popupH = popup.offsetHeight || popupH || 60;
-  const prov = getProvider();
-  providerW = prov.offsetWidth || providerW || 60;
-  providerH = prov.offsetHeight || providerH || 18;
 }
 
 function showPopup() {
@@ -112,39 +99,13 @@ function showPopup() {
 
 function hidePopup() {
   const el = document.getElementById(POPUP_ID);
-  if (el) {
-    el.classList.remove("pt-popup--visible");
-    el.setAttribute("aria-hidden", "true");
-  }
-  const p = document.getElementById(PROVIDER_ID);
-  if (p) {
-    p.classList.remove("pt-popup--visible");
-  }
-  lockedH = 0;
-}
-
-function showProvider(text) {
-  const p = getProvider();
-  p.textContent = text || "";
-  if (text) {
-    p.classList.add("pt-popup--visible");
-  } else {
-    p.classList.remove("pt-popup--visible");
-  }
-  // Force the browser to layout the new content before we read the
-  // size, so position() can place the badge with the correct width.
-  void p.offsetHeight;
-  providerW = p.offsetWidth || providerW || 60;
-  providerH = p.offsetHeight || providerH || 18;
-  console.log(
-    "[Popup Translator] provider:",
-    JSON.stringify({ text, providerW, providerH, transform: p.style.transform })
-  );
+  if (!el) return;
+  el.classList.remove("pt-popup--visible");
+  el.setAttribute("aria-hidden", "true");
 }
 
 function applyTheme() {
   const popup = getPopup();
-  const prov = getProvider();
   let effective = settings.theme;
   if (!effective || effective === "system") {
     effective =
@@ -153,9 +114,7 @@ function applyTheme() {
         ? "dark"
         : "light";
   }
-  const isDark = effective === "dark";
-  popup.classList.toggle("pt-popup--dark", isDark);
-  prov.classList.toggle("pt-popup__provider--dark", isDark);
+  popup.classList.toggle("pt-popup--dark", effective === "dark");
 }
 
 if (window.matchMedia) {
@@ -170,10 +129,6 @@ if (window.matchMedia) {
   }
 }
 
-/**
- * Pick the sentence under (x, y). Returns "" if the cursor is not
- * over a text node.
- */
 function extractTextAt(x, y) {
   if (typeof document.caretRangeFromPoint !== "function") return "";
   const r = document.caretRangeFromPoint(x, y);
@@ -296,28 +251,27 @@ function findOffsetAtX(node, text, targetX, lo, hi, side) {
 }
 
 /** Build skeleton lines sized to roughly match the expected
- *  translation. Number of lines is a function of the source
- *  text length so a short sentence shows 1 line, a long
- *  paragraph shows 3-4. */
-function buildSkeleton(sourceText) {
-  const body = document.createElement("div");
-  body.className = "pt-popup__body pt-popup__body--skeleton";
-
+ *  translation. Returns an array of width classes. */
+function skeletonLineClasses(sourceText) {
   const len = (sourceText || "").length;
   let n;
   if (len < 30) n = 1;
   else if (len < 80) n = 2;
   else if (len < 160) n = 3;
   else n = 4;
-
-  // Distribute widths: first/last lines often shorter, middle full.
   const widths = ["long", "medium", "long", "medium"];
-  for (let i = 0; i < n; i++) {
+  return widths.slice(0, n);
+}
+
+function setSkeleton(contentEl, sourceText) {
+  contentEl.className = "pt-popup__trans";
+  contentEl.textContent = "";
+  const widths = skeletonLineClasses(sourceText);
+  for (const w of widths) {
     const line = document.createElement("span");
-    line.className = "pt-popup__line pt-popup__line--" + widths[i];
-    body.appendChild(line);
+    line.className = "pt-popup__line pt-popup__line--" + w;
+    contentEl.appendChild(line);
   }
-  return body;
 }
 
 function positionPopup(x, y) {
@@ -334,52 +288,32 @@ function applyPendingPos() {
 
   readSizes();
   const el = getPopup();
-  const prov = getProvider();
   const vw = document.documentElement.clientWidth;
   const vh = document.documentElement.clientHeight;
 
-  // Center horizontally on the cursor; clamp to gutters.
   let px = x - popupW / 2;
   if (px < POPUP_GUTTER) px = POPUP_GUTTER;
   if (px + popupW > vw - POPUP_GUTTER) px = vw - popupW - POPUP_GUTTER;
 
-  // Place above the cursor; flip below if it would clip the top.
   let py = y - popupH - POPUP_OFFSET_Y;
   if (py < POPUP_GUTTER) py = y + POPUP_OFFSET_Y;
   if (py + popupH > vh - POPUP_GUTTER) py = vh - popupH - POPUP_GUTTER;
   if (py < POPUP_GUTTER) py = POPUP_GUTTER;
 
   el.style.transform = `translate3d(${px}px, ${py}px, 0)`;
-
-  // Provider badge sits directly above the popup's top edge, with a
-  // small gap so the two are visually separate. The badge's bottom
-  // is at popup.top - PROVIDER_GAP, i.e. badge.top = popup.top -
-  // providerH - PROVIDER_GAP.
-  let ppx = px + 6;
-  let ppy = py - providerH - PROVIDER_GAP;
-  if (ppx + providerW > vw - POPUP_GUTTER) ppx = vw - providerW - POPUP_GUTTER;
-  if (ppx < POPUP_GUTTER) ppx = POPUP_GUTTER;
-  if (ppy < POPUP_GUTTER) ppy = POPUP_GUTTER;
-
-  prov.style.transform = `translate3d(${ppx}px, ${ppy}px, 0)`;
 }
 
-/** Show the popup immediately with a skeleton sized to the
- *  expected translation. */
 function showSkeleton(sourceText) {
   const el = getPopup();
-  const oldBody = el.querySelector(".pt-popup__body");
-  const newBody = buildSkeleton(sourceText);
-  if (oldBody) el.replaceChild(newBody, oldBody);
-  else el.appendChild(newBody);
-  // Hide provider while loading.
-  showProvider("");
+  const provider = el.querySelector(".pt-popup__provider");
+  const trans = el.querySelector(".pt-popup__trans");
+  provider.classList.remove("pt-popup__provider--ready");
+  provider.textContent = "";
+  setSkeleton(trans, sourceText);
   // Force layout to measure the skeleton before positioning.
   void el.offsetHeight;
   readSizes();
   showPopup();
-  // Force a re-position immediately so the skeleton lands at the
-  // cursor with the correct dimensions, even when stationary.
   if (!pendingPos) pendingPos = { x: lastX, y: lastY };
   cancelAnimationFrame(rafId);
   rafId = requestAnimationFrame(applyPendingPos);
@@ -387,43 +321,35 @@ function showSkeleton(sourceText) {
 
 function renderPayload(payload) {
   const el = getPopup();
-  // Replace the skeleton with the real text element. The text
-  // starts with opacity:0 then transitions to 1, while the
-  // skeleton (if still in the DOM) is removed in the same tick,
-  // giving a clean cross-fade.
-  const oldBody = el.querySelector(".pt-popup__body");
-  const newBody = document.createElement("div");
-  newBody.className = "pt-popup__body";
+  const provider = el.querySelector(".pt-popup__provider");
+  const trans = el.querySelector(".pt-popup__trans");
 
-  const trans = document.createElement("div");
-  trans.className = "pt-popup__trans";
+  // Reset trans to a clean text container.
+  while (trans.firstChild) trans.removeChild(trans.firstChild);
+  trans.classList.remove("pt-popup__line", "pt-popup__line--short", "pt-popup__line--medium", "pt-popup__line--long");
+
   if (payload && payload.translatedText) {
     trans.textContent = payload.translatedText;
   } else {
     trans.textContent = (payload && payload.error) || "Translation failed";
     trans.classList.add("pt-popup__error");
   }
-  newBody.appendChild(trans);
 
-  if (oldBody) el.replaceChild(newBody, oldBody);
-  else el.appendChild(newBody);
+  // Update provider chip.
+  provider.classList.remove("pt-popup__provider--ready");
+  provider.textContent = payload && payload.provider ? payload.provider : "";
 
-  // Trigger layout so the transition fires from the freshly
-  // inserted node, then add the ready class on the next frame.
-  void trans.offsetHeight;
+  // Trigger layout then fade in on the next frame.
+  void el.offsetHeight;
   requestAnimationFrame(() => {
     trans.classList.add("pt-popup__trans--ready");
+    if (provider.textContent) {
+      provider.classList.add("pt-popup__provider--ready");
+    }
   });
 
-  // Show the provider chip with the new label. showProvider()
-  // updates providerW/H so the next applyPendingPos lands the
-  // badge at the right coordinates.
-  showProvider(payload && payload.provider ? payload.provider : "");
   readSizes();
   showPopup();
-  // Force a re-position immediately so the badge and the new
-  // popup text land at the cursor with their fresh sizes, even
-  // when the cursor is stationary.
   if (!pendingPos) pendingPos = { x: lastX, y: lastY };
   cancelAnimationFrame(rafId);
   rafId = requestAnimationFrame(applyPendingPos);
