@@ -1,0 +1,74 @@
+.pt-popup {
+  position: fixed;
+  z-index: 2147483647;
+  max-width: 320px;
+  padding: 10px 14px;
+  background: rgba(255, 255, 255, 0.72);
+  -webkit-backdrop-filter: blur(12px) saturate(140%);
+  backdrop-filter: blur(12px) saturate(140%);
+  color: #111;
+  font: 13px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 10px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  word-wrap: break-word;
+  white-space: pre-wrap;
+}
+
+.pt-popup.pt-popup--visible {
+  opacity: 1;
+}
+
+.pt-popup__src {
+  color: #666;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.pt-popup__trans {
+  color: #000;
+  font-weight: 500;
+}
+
+.pt-popup__provider {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  color: #888;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 4px;
+}
+
+.pt-popup--dark {
+  background: rgba(20, 20, 20, 0.72);
+  color: #fafafa;
+  border-color: rgba(255, 255, 255, 0.16);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
+}
+
+.pt-popup--dark .pt-popup__src {
+  color: #999;
+}
+
+.pt-popup--dark .pt-popup__trans {
+  color: #fff;
+}
+
+.pt-popup--dark .pt-popup__provider {
+  color: #aaa;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.pt-popup__error {
+  color: #c0392b;
+  font-style: italic;
+  font-size: 12px;
+}
+
+.pt-popup--dark .pt-popup__error {
+  color: #e57373;
+}
