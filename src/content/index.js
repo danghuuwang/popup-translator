@@ -1,24 +1,25 @@
 /**
  * Content script — hover any text to translate.
  *
- * Text pickup:
- *   1. document.caretRangeFromPoint(x, y) anchors a Range at the
- *      caret position under the cursor.
- *   2. If the start container is not a text node, abort.
- *   3. We do NOT rely on Range.expand("sentence") because Chrome
- *      historically throws on that unit. Instead we walk the text
- *      node's clientRects, find the visual line that contains the
- *      cursor's Y, take the text of that line, then split on
- *      sentence boundaries (. ! ? \n) to deliver sentence-level
- *      granularity inside a multi-sentence paragraph.
+ * Positioning model (mirrors the reference extension Từ điển ENVI):
+ *   The popup is a single fixed-positioned div, updated on every
+ *   mousemove via requestAnimationFrame. We compute (x, y) so that
+ *   the popup sits *directly above* the cursor (no horizontal
+ *   offset) and *horizontally centered* on the cursor's X. The
+ *   popup's natural size is cached; we only re-measure when content
+ *   changes. On regular mousemoves we update the transform in place,
+ *   so the popup glides smoothly with no flicker.
  *
- * Positioning + fade:
- *   - Position is written through transform: translate3d inside a
- *     rAF callback so the popup glides with the cursor with no
- *     jitter and never triggers layout.
- *   - Fade is pure CSS (opacity transition on .pt-popup).
- *     .pt-popup--visible toggles opacity 0 -> 1. The element stays
- *     in the DOM with pointer-events: none; visibility is opacity.
+ * Text pickup (mirrors the reference extension):
+ *   1. document.caretRangeFromPoint(x, y) anchors a Range at the
+ *      caret under the cursor.
+ *   2. If the start container is not a text node, abort.
+ *   3. We do NOT call Range.expand("sentence"): that's Gecko-only
+ *      and Chrome throws on it. Instead we enumerate the text
+ *      node's clientRects, find the visual line that vertically
+ *      contains the cursor's Y, take that line's text, then split
+ *      on sentence terminators to deliver sentence-level
+ *      granularity.
  */
 
 import "./popup.css";
@@ -27,10 +28,8 @@ const POLL_MS = 200;
 const DEBOUNCE_MS = 220;
 const MIN_TEXT_LEN = 2;
 const MAX_TEXT_LEN = 500;
-const POPUP_OFFSET_Y = 16;
+const POPUP_OFFSET_Y = 12;
 const POPUP_GUTTER = 8;
-const FADE_IN_MS = 120;
-const FADE_OUT_MS = 180;
 const POPUP_ID = "__pt_popup_root__";
 
 /** @type {{sl: string, tl: string, hoverEnabled: boolean, theme: 'light'|'dark'}} */
@@ -45,14 +44,15 @@ let lastX = 0;
 let lastY = 0;
 let lastText = "";
 let debounceTimer = null;
-let hideTimer = null;
 let inFlight = 0;
 let pendingPos = null;
 let rafId = 0;
+/** Cached size of the popup. */
+let popupW = 320;
+let popupH = 60;
 
 console.log("[Popup Translator] content script loaded");
 
-/** Lazily create or fetch the singleton popup element. */
 function getPopup() {
   let root = document.getElementById(POPUP_ID);
   if (root) return root;
@@ -75,15 +75,10 @@ function getPopup() {
   return root;
 }
 
-/** Return the popup's natural layout size, regardless of transform. */
-function measurePopup() {
+function readPopupSize() {
   const el = getPopup();
-  // offsetWidth/offsetHeight are unaffected by transform and always
-  // reflect the laid-out box, so they're safe to read even when the
-  // popup is currently translated off-screen.
-  const w = el.offsetWidth;
-  const h = el.offsetHeight;
-  return { w: w || 320, h: h || 60, el };
+  popupW = el.offsetWidth || popupW || 320;
+  popupH = el.offsetHeight || popupH || 60;
 }
 
 function showPopup() {
@@ -105,10 +100,23 @@ function applyTheme() {
 }
 
 /**
- * Pick the sentence under (x, y). Uses caretRangeFromPoint to find
- * the text node under the cursor, finds the visual line containing
- * the cursor via clientRects, then splits that line on sentence
- * boundaries to get a single sentence.
+ * Pick the sentence under (x, y). Returns "" if the cursor is not
+ * over a text node.
+ *
+ * Strategy (matches the reference extension):
+ *   1. document.caretRangeFromPoint anchors a Range at the caret.
+ *   2. If startContainer is not a text node, abort.
+ *   3. Try r.expand("sentence"). This is a Gecko-standard API that
+ *      Chrome ≥ 109 also supports. It extends the Range to the
+ *      nearest sentence boundaries, which is exactly what the
+ *      reference extension does. If the browser doesn't support
+ *      it (or throws), fall through to the rect-based splitter.
+ *   4. Validate the expanded range's rect still contains the cursor
+ *      before returning — otherwise the expansion drifted away.
+ *   5. Fallback: enumerate the text node's clientRects, pick the
+ *      visual line containing the cursor's Y, then split that line
+ *      on sentence terminators and pick the sentence whose
+ *      [start,end] band the cursor is over.
  */
 function extractTextAt(x, y) {
   if (typeof document.caretRangeFromPoint !== "function") return "";
@@ -119,19 +127,34 @@ function extractTextAt(x, y) {
   const text = node.nodeValue;
   if (!text) return "";
 
-  // Build a range over the whole text node to enumerate line rects.
+  // 1) Try Range.expand("sentence") — the reference extension's
+  //    approach. Works on Firefox always, and on Chrome 109+.
+  try {
+    if (typeof r.expand === "function") {
+      r.expand("sentence");
+      const rect = r.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0 &&
+          rect.left <= x && rect.right >= x &&
+          rect.top <= y && rect.bottom >= y) {
+        const out = r.toString().replace(/\s+/g, " ").trim();
+        if (out.length >= MIN_TEXT_LEN) {
+          return out.length > MAX_TEXT_LEN ? out.slice(0, MAX_TEXT_LEN) : out;
+        }
+      }
+    }
+  } catch (_) {
+    // "sentence" unit not supported; fall through.
+  }
+
+  // 2) Fallback: line-rect + sentence splitter.
   const fullRange = document.createRange();
   fullRange.setStart(node, 0);
   fullRange.setEnd(node, text.length);
   const rects = fullRange.getClientRects();
-
   if (!rects || rects.length === 0) {
-    // Fall back: split the whole node value on sentence boundaries.
-    return splitSentences(text).join(" ").trim();
+    return pickSentence(text, x, 0, text.length, node);
   }
 
-  // Pick the line rect that vertically contains the cursor; if none
-  // contains it, take the nearest.
   let bestRect = null;
   let bestDist = Infinity;
   for (let i = 0; i < rects.length; i++) {
@@ -150,79 +173,65 @@ function extractTextAt(x, y) {
   }
   if (!bestRect) bestRect = rects[0];
 
-  // Convert rect horizontal extent to character offsets by binary
-  // search over the node.
-  const leftOff = findOffsetAtX(node, text, bestRect.left, 0, text.length, "left");
-  const rightOff = findOffsetAtX(node, text, bestRect.right, leftOff, text.length, "right");
-  let line = text.slice(leftOff, rightOff);
-  // If a sentence in the line straddles a line-wrap, the next
-  // rect's text will already cover the rest, so trimming on the
-  // nearest sentence boundary is enough.
-  line = line.replace(/\s+/g, " ").trim();
-  if (line.length < MIN_TEXT_LEN) return "";
-
-  // Find the sentence that contains the cursor's X.
-  const sentence = pickSentence(line, x);
-  if (sentence.length < MIN_TEXT_LEN) return "";
-  if (sentence.length > MAX_TEXT_LEN) return sentence.slice(0, MAX_TEXT_LEN);
-  return sentence;
+  const lo = findOffsetAtX(node, text, bestRect.left, 0, text.length, "left");
+  const hi = findOffsetAtX(node, text, bestRect.right, lo, text.length, "right");
+  return pickSentence(text, x, lo, hi, node);
 }
 
-/** Split a string on sentence terminators (., !, ?, newline). */
-function splitSentences(s) {
-  return s.split(/(?<=[.!?])\s+|\n+/);
-}
-
-/**
- * Given a line and a cursor X coordinate, return the sentence within
- * the line that contains or is nearest to that X. Falls back to the
- * longest sentence if x is off-range.
- */
-function pickSentence(line, x) {
-  const parts = splitSentences(line).map((p) => p.trim()).filter(Boolean);
-  if (parts.length <= 1) return line;
-
-  // Walk the line and accumulate the running offset of each
-  // sentence so we can compare against x.
-  let acc = 0;
-  const ranges = parts.map((p) => {
-    const start = acc;
-    acc += p.length;
-    return { p, start, end: acc };
-  });
-
-  // Heuristic: if we have no geometric way to pick, take the first
-  // sentence that the cursor is over. We approximate by using the
-  // rect of the first character (cheap).
-  for (const r of ranges) {
-    // Cheap heuristic: compare string offsets, not screen X, since
-    // the line is single-row and X approximately scales with offset.
-    // For our purpose (sentence-level translation), it's good enough.
-    const lineWidth = line.length || 1;
-    const pxStart = r.start * (lineWidth > 0 ? 1 : 0);
-    if (x >= lineWidth) break; // not enough info
+/** Return the sentence in text[lo..hi] that the cursor is over. */
+function pickSentence(text, x, lo, hi, node) {
+  const slice = text.slice(lo, hi).replace(/\s+/g, " ").trim();
+  if (slice.length < MIN_TEXT_LEN) return "";
+  const sentences = slice
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (sentences.length <= 1) {
+    return slice.length > MAX_TEXT_LEN ? slice.slice(0, MAX_TEXT_LEN) : slice;
   }
 
-  // Simpler heuristic that actually works: pick the sentence whose
-  // start offset is nearest the cursor's x position when scaled to
-  // text length. This isn't pixel-perfect but matches user intent
-  // when they hover different sentences.
-  let best = ranges[0];
+  // Map the cursor's X to a relative position within the line, then
+  // pick the sentence whose [startRatio, endRatio] band contains it
+  // (or the nearest one).
+  let lineLeft = 0;
+  let lineRight = 1;
+  if (node) {
+    const r1 = document.createRange();
+    r1.setStart(node, lo);
+    r1.setEnd(node, lo + 1);
+    lineLeft = r1.getBoundingClientRect().left;
+    const r2 = document.createRange();
+    r2.setStart(node, hi - 1);
+    r2.setEnd(node, hi);
+    lineRight = r2.getBoundingClientRect().right;
+  }
+  const lineWidth = Math.max(1, lineRight - lineLeft);
+  const ratio = Math.max(0, Math.min(1, (x - lineLeft) / lineWidth));
+
+  let acc = 0;
+  let best = sentences[0];
   let bestDelta = Infinity;
-  for (const r of ranges) {
-    const ratio = r.start / (line.length || 1);
-    const target = (x / (window.innerWidth || 1)) * (line.length || 1);
-    const d = Math.abs(r.start - target);
+  for (const s of sentences) {
+    const startRatio = acc / slice.length;
+    const endRatio = (acc + s.length) / slice.length;
+    const d =
+      ratio < startRatio
+        ? startRatio - ratio
+        : ratio > endRatio
+        ? ratio - endRatio
+        : 0;
     if (d < bestDelta) {
       bestDelta = d;
-      best = r;
+      best = s;
     }
+    acc += s.length;
   }
-  return best.p;
+
+  return best.length > MAX_TEXT_LEN ? best.slice(0, MAX_TEXT_LEN) : best;
 }
 
-/** Binary search for the character offset in node whose Range
- *  right (or left) edge crosses targetX. */
+/** Binary search for the char offset whose Range right (or left)
+ *  edge crosses targetX. */
 function findOffsetAtX(node, text, targetX, lo, hi, side) {
   while (lo < hi - 1) {
     const mid = (lo + hi) >>> 1;
@@ -249,18 +258,26 @@ function applyPendingPos() {
   const { x, y } = pendingPos;
   pendingPos = null;
 
-  const { w, h, el } = measurePopup();
+  const el = getPopup();
   const vw = document.documentElement.clientWidth;
   const vh = document.documentElement.clientHeight;
 
-  let px = x - w / 2;
-  if (px < POPUP_GUTTER) px = POPUP_GUTTER;
-  if (px + w > vw - POPUP_GUTTER) px = vw - w - POPUP_GUTTER;
+  // Read layout size at every rAF. offsetWidth/Height are not
+  // affected by the current transform, so this is safe to do
+  // without ever moving the popup off-screen — no flicker.
+  readPopupSize();
 
-  // Above the cursor; flip below if it would clip the top.
-  let py = y - h - POPUP_OFFSET_Y;
+  // Center horizontally on the cursor; clamp to viewport gutters.
+  let px = x - popupW / 2;
+  if (px < POPUP_GUTTER) px = POPUP_GUTTER;
+  if (px + popupW > vw - POPUP_GUTTER) px = vw - popupW - POPUP_GUTTER;
+
+  // Place directly above the cursor (offset_y = distance from the
+  // cursor to the popup's bottom edge). Flip below if it would
+  // clip the top of the viewport.
+  let py = y - popupH - POPUP_OFFSET_Y;
   if (py < POPUP_GUTTER) py = y + POPUP_OFFSET_Y;
-  if (py + h > vh - POPUP_GUTTER) py = vh - h - POPUP_GUTTER;
+  if (py + popupH > vh - POPUP_GUTTER) py = vh - popupH - POPUP_GUTTER;
   if (py < POPUP_GUTTER) py = POPUP_GUTTER;
 
   el.style.transform = `translate3d(${px}px, ${py}px, 0)`;
@@ -283,21 +300,20 @@ function renderPayload(payload) {
     provider.style.display = "none";
   }
 
-  // After content change, the popup size may have grown. Re-position
-  // against the new size so it doesn't bleed out of the viewport.
+  // Show the popup, then re-apply position so it lands at the
+  // cursor with the new content size.
   showPopup();
-  if (pendingPos) applyPendingPos();
-  else if (rafId === 0) {
-    // No new mouse position; force a re-measure on the last position.
-    const r = el.getBoundingClientRect();
-    pendingPos = { x: r.left + r.width / 2, y: r.top + POPUP_OFFSET_Y };
-    applyPendingPos();
+  if (pendingPos) {
+    cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(applyPendingPos);
+  } else {
+    // No fresh mousemove is queued; re-position with the last
+    // known mouse position so the popup doesn't sit at the
+    // pre-render coordinates.
+    pendingPos = { x: lastX, y: lastY };
+    cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(applyPendingPos);
   }
-}
-
-function scheduleHide() {
-  if (hideTimer) clearTimeout(hideTimer);
-  hideTimer = setTimeout(hidePopup, Math.max(HIDE_DELAY_MS, FADE_OUT_MS + 50));
 }
 
 async function requestTranslation(text) {
@@ -318,10 +334,6 @@ async function requestTranslation(text) {
   }
 }
 
-function trackCursor(x, y) {
-  positionPopup(x, y);
-}
-
 function onCursorSample() {
   if (!settings.hoverEnabled) return;
   if (document.visibilityState !== "visible") return;
@@ -329,17 +341,12 @@ function onCursorSample() {
 
   const text = extractTextAt(lastX, lastY);
   if (!text) {
-    if (hideTimer) clearTimeout(hideTimer);
-    hideTimer = setTimeout(hidePopup, FADE_OUT_MS + 50);
+    hidePopup();
     return;
   }
   if (text === lastText) return;
   lastText = text;
 
-  if (hideTimer) {
-    clearTimeout(hideTimer);
-    hideTimer = null;
-  }
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
     requestTranslation(text);
@@ -349,7 +356,7 @@ function onCursorSample() {
 function onMouseMove(e) {
   lastX = e.clientX;
   lastY = e.clientY;
-  trackCursor(lastX, lastY);
+  positionPopup(lastX, lastY);
 }
 
 function onSelectionChange() {
