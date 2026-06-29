@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Popup Translator",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Translate any text on hover directly on the web page.",
   "action": {
     "default_popup": "popup.html",

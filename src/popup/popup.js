@@ -30,7 +30,7 @@ const KEYS = {
   status: "pt-status",
 };
 
-const DEFAULTS = { sl: "auto", tl: "vi", hoverEnabled: true, theme: false };
+const DEFAULTS = { sl: "auto", tl: "vi", hoverEnabled: true, theme: "system" };
 
 function fillSelect(selectEl, list, current) {
   selectEl.innerHTML = "";
@@ -40,6 +40,17 @@ function fillSelect(selectEl, list, current) {
     opt.textContent = item.label;
     if (item.code === current) opt.selected = true;
     selectEl.appendChild(opt);
+  }
+}
+
+function setSelectValue(selectEl, value) {
+  if (!selectEl) return;
+  const opts = selectEl.options;
+  for (let i = 0; i < opts.length; i++) {
+    if (opts[i].value === value) {
+      selectEl.selectedIndex = i;
+      return;
+    }
   }
 }
 
@@ -58,7 +69,7 @@ function load() {
     fillSelect(document.getElementById(KEYS.sl), LANGUAGES, items.sl);
     fillSelect(document.getElementById(KEYS.tl), TARGET_LANGUAGES, items.tl);
     document.getElementById(KEYS.hover).checked = !!items.hoverEnabled;
-    document.getElementById(KEYS.theme).checked = !!items.theme;
+    setSelectValue(document.getElementById(KEYS.theme), items.theme || "system");
   });
 }
 
@@ -78,9 +89,7 @@ function wire() {
     .addEventListener("change", (e) => save({ hoverEnabled: e.target.checked }));
   document
     .getElementById(KEYS.theme)
-    .addEventListener("change", (e) =>
-      save({ theme: e.target.checked ? "dark" : "light" })
-    );
+    .addEventListener("change", (e) => save({ theme: e.target.value }));
 }
 
 document.addEventListener("DOMContentLoaded", () => {

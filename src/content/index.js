@@ -33,12 +33,12 @@ const POPUP_OFFSET_Y = 12;
 const POPUP_GUTTER = 8;
 const POPUP_ID = "__pt_popup_root__";
 
-/** @type {{sl: string, tl: string, hoverEnabled: boolean, theme: 'light'|'dark'}} */
+/** @type {{sl: string, tl: string, hoverEnabled: boolean, theme: 'light'|'dark'|'system'}} */
 let settings = {
   sl: "auto",
   tl: "vi",
   hoverEnabled: true,
-  theme: "light",
+  theme: "system",
 };
 
 let lastX = 0;
@@ -98,7 +98,28 @@ function hidePopup() {
 
 function applyTheme() {
   const el = getPopup();
-  el.classList.toggle("pt-popup--dark", settings.theme === "dark");
+  let effective = settings.theme;
+  if (!effective || effective === "system") {
+    effective =
+      window.matchMedia &&
+      window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light";
+  }
+  el.classList.toggle("pt-popup--dark", effective === "dark");
+}
+
+// React to system theme changes when the user picked "system".
+if (window.matchMedia) {
+  try {
+    window
+      .matchMedia("(prefers-color-scheme: dark)")
+      .addEventListener("change", () => {
+        if (!settings.theme || settings.theme === "system") applyTheme();
+      });
+  } catch (e) {
+    // older browsers: ignore
+  }
 }
 
 /**
@@ -368,12 +389,11 @@ function onMouseMove(e) {
   lastX = e.clientX;
   lastY = e.clientY;
   positionPopup(lastX, lastY);
-  // Any mouse movement invalidates a pending hover trigger — the
-  // user is still scanning. The next onCursorSample will reset it.
-  if (hoverTimer) {
-    clearTimeout(hoverTimer);
-    hoverTimer = null;
-  }
+  // Do not extract or invalidate the hover timer here. The polling
+  // tick (onCursorSample) is the single source of truth for "what
+  // text is under the cursor" and for arming/clearing the dwell
+  // timer. Running expensive Range operations on every mousemove
+  // would also stall the page.
 }
 
 function onSelectionChange() {
@@ -393,7 +413,7 @@ function onSelectionChange() {
 function loadSettings() {
   try {
     chrome.storage.local.get(
-      { sl: "auto", tl: "vi", hoverEnabled: true, theme: "light" },
+      { sl: "auto", tl: "vi", hoverEnabled: true, theme: "system" },
       (items) => {
         if (chrome.runtime.lastError) return;
         settings = { ...settings, ...items };
