@@ -1,5 +1,7 @@
 .pt-popup {
   position: fixed;
+  top: 0;
+  left: 0;
   z-index: 2147483647;
   max-width: 320px;
   padding: 10px 14px;
@@ -13,7 +15,9 @@
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.12s ease;
+  transform: translate3d(-9999px, -9999px, 0);
+  transition: opacity 140ms ease;
+  will-change: transform, opacity;
   word-wrap: break-word;
   white-space: pre-wrap;
 }
