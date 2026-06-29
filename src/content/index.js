@@ -374,6 +374,16 @@ function onCursorSample() {
   if (text === lastText) return;
   lastText = text;
 
+  // Text under the cursor just changed. Hide the old popup right
+  // away — it will be replaced by the new translation once the
+  // dwell timer fires.
+  hidePopup();
+  if (inFlight) {
+    // Mark any in-flight request as stale by bumping the counter;
+    // its response will be ignored.
+    inFlight++;
+  }
+
   // Require the cursor to rest on the same text for HOVER_DELAY_MS
   // before we even consider showing the popup.
   if (hoverTimer) clearTimeout(hoverTimer);
