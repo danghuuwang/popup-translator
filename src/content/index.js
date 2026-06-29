@@ -3,19 +3,20 @@
  *
  * Two visual elements, both fixed-positioned at the document root:
  *   - The translation popup (.pt-popup) with the translated text.
- *   - The provider badge (.pt-popup__provider), docked at the
- *     top-left of the popup with a small gap so it reads as a
- *     separate chip rather than part of the popup body.
+ *   - The provider badge (.pt-popup__provider), docked directly
+ *     above the popup's top edge with a small gap.
  *
  * Hover flow:
  *   1. document.caretRangeFromPoint finds the text node under the
  *      cursor. The text is split on sentence terminators to give
  *      sentence-level granularity inside a multi-sentence paragraph.
  *   2. Once the cursor has rested on the same text for HOVER_DELAY_MS
- *      (500ms), the popup appears immediately with a skeleton
- *      placeholder. The translation request fires in parallel.
- *   3. When the response arrives, the skeleton is replaced with the
- *      translated text and the provider badge fades in.
+ *      (500ms), the popup appears with a skeleton placeholder whose
+ *      size approximates the expected translation. The translation
+ *      request fires in parallel.
+ *   3. When the response arrives, the skeleton is cross-faded out
+ *      and the real text fades in (CSS opacity transition). The
+ *      popup keeps the same dimensions so it never jumps.
  *   4. Moving to a different text hides the popup right away; any
  *      in-flight response for the old text is dropped.
  *
@@ -23,7 +24,7 @@
  *   Both elements are updated on every mousemove via
  *   requestAnimationFrame. The popup sits above the cursor, centered
  *   horizontally. The provider badge is anchored to the popup's
- *   top-left corner with a 12px gap.
+ *   top edge, sitting just above it with a small gap.
  */
 
 import "./popup.css";
@@ -35,7 +36,7 @@ const MIN_TEXT_LEN = 2;
 const MAX_TEXT_LEN = 500;
 const POPUP_OFFSET_Y = 12;
 const POPUP_GUTTER = 8;
-const PROVIDER_GAP = 12;
+const PROVIDER_GAP = 8;
 const POPUP_ID = "__pt_popup_root__";
 const PROVIDER_ID = "__pt_popup_provider__";
 
@@ -55,12 +56,13 @@ let hoverTimer = null;
 let inFlight = 0;
 let pendingPos = null;
 let rafId = 0;
-/** Cached size of the popup. */
 let popupW = 320;
 let popupH = 60;
-/** Cached size of the provider badge. */
-let providerW = 0;
-let providerH = 0;
+let providerW = 60;
+let providerH = 18;
+/** Cached current visible height so the popup doesn't jump when
+ *  the skeleton is replaced with the real translation. */
+let lockedH = 0;
 
 console.log("[Popup Translator] content script loaded");
 
@@ -74,12 +76,9 @@ function getPopup() {
   root.setAttribute("role", "tooltip");
   root.setAttribute("aria-hidden", "true");
 
-  const trans = document.createElement("div");
-  trans.className = "pt-popup__trans pt-popup__trans--skeleton";
-  // Use a non-breaking space so the box has measurable width while
-  // the skeleton background animates.
-  trans.textContent = " ";
-  root.appendChild(trans);
+  const body = document.createElement("div");
+  body.className = "pt-popup__body";
+  root.appendChild(body);
 
   (document.body || document.documentElement).appendChild(root);
   return root;
@@ -121,6 +120,7 @@ function hidePopup() {
   if (p) {
     p.classList.remove("pt-popup--visible");
   }
+  lockedH = 0;
 }
 
 function showProvider(text) {
@@ -131,7 +131,6 @@ function showProvider(text) {
   } else {
     p.classList.remove("pt-popup--visible");
   }
-  // Re-measure so positioning reflects the new label width.
   providerW = p.offsetWidth || providerW;
   providerH = p.offsetHeight || providerH;
 }
@@ -177,8 +176,6 @@ function extractTextAt(x, y) {
   const text = node.nodeValue;
   if (!text) return "";
 
-  // 1) Try Range.expand("sentence") — the reference extension's
-  //    approach. Works on Firefox always, and on Chrome 109+.
   try {
     if (typeof r.expand === "function") {
       r.expand("sentence");
@@ -198,7 +195,6 @@ function extractTextAt(x, y) {
     // "sentence" unit not supported; fall through.
   }
 
-  // 2) Fallback: line-rect + sentence splitter.
   const fullRange = document.createRange();
   fullRange.setStart(node, 0);
   fullRange.setEnd(node, text.length);
@@ -230,7 +226,6 @@ function extractTextAt(x, y) {
   return pickSentence(text, x, lo, hi, node);
 }
 
-/** Return the sentence in text[lo..hi] that the cursor is over. */
 function pickSentence(text, x, lo, hi, node) {
   const slice = text.slice(lo, hi).replace(/\s+/g, " ").trim();
   if (slice.length < MIN_TEXT_LEN) return "";
@@ -279,8 +274,6 @@ function pickSentence(text, x, lo, hi, node) {
   return best.length > MAX_TEXT_LEN ? best.slice(0, MAX_TEXT_LEN) : best;
 }
 
-/** Binary search for the char offset whose Range right (or left)
- *  edge crosses targetX. */
 function findOffsetAtX(node, text, targetX, lo, hi, side) {
   while (lo < hi - 1) {
     const mid = (lo + hi) >>> 1;
@@ -293,6 +286,31 @@ function findOffsetAtX(node, text, targetX, lo, hi, side) {
     else hi = mid;
   }
   return lo;
+}
+
+/** Build skeleton lines sized to roughly match the expected
+ *  translation. Number of lines is a function of the source
+ *  text length so a short sentence shows 1 line, a long
+ *  paragraph shows 3-4. */
+function buildSkeleton(sourceText) {
+  const body = document.createElement("div");
+  body.className = "pt-popup__body pt-popup__body--skeleton";
+
+  const len = (sourceText || "").length;
+  let n;
+  if (len < 30) n = 1;
+  else if (len < 80) n = 2;
+  else if (len < 160) n = 3;
+  else n = 4;
+
+  // Distribute widths: first/last lines often shorter, middle full.
+  const widths = ["long", "medium", "long", "medium"];
+  for (let i = 0; i < n; i++) {
+    const line = document.createElement("span");
+    line.className = "pt-popup__line pt-popup__line--" + widths[i];
+    body.appendChild(line);
+  }
+  return body;
 }
 
 function positionPopup(x, y) {
@@ -313,7 +331,7 @@ function applyPendingPos() {
   const vw = document.documentElement.clientWidth;
   const vh = document.documentElement.clientHeight;
 
-  // Center the popup horizontally on the cursor; clamp to gutters.
+  // Center horizontally on the cursor; clamp to gutters.
   let px = x - popupW / 2;
   if (px < POPUP_GUTTER) px = POPUP_GUTTER;
   if (px + popupW > vw - POPUP_GUTTER) px = vw - popupW - POPUP_GUTTER;
@@ -326,12 +344,12 @@ function applyPendingPos() {
 
   el.style.transform = `translate3d(${px}px, ${py}px, 0)`;
 
-  // Provider badge sits at the popup's top-left corner with a small
-  // gap so the two read as separate elements.
-  let ppx = px + PROVIDER_GAP;
-  let ppy = py - providerH + (providerH > 0 ? -PROVIDER_GAP : -PROVIDER_GAP);
-  // The badge should be tucked just above the popup's top edge.
-  ppy = py - providerH / 2;
+  // Provider badge sits directly above the popup's top edge, with a
+  // small gap so the two are visually separate. The badge's bottom
+  // is at popup.top - PROVIDER_GAP, i.e. badge.top = popup.top -
+  // providerH - PROVIDER_GAP.
+  let ppx = px + 6;
+  let ppy = py - providerH - PROVIDER_GAP;
   if (ppx + providerW > vw - POPUP_GUTTER) ppx = vw - providerW - POPUP_GUTTER;
   if (ppx < POPUP_GUTTER) ppx = POPUP_GUTTER;
   if (ppy < POPUP_GUTTER) ppy = POPUP_GUTTER;
@@ -339,15 +357,19 @@ function applyPendingPos() {
   prov.style.transform = `translate3d(${ppx}px, ${ppy}px, 0)`;
 }
 
-/** Show the popup immediately with a skeleton placeholder. */
-function showSkeleton() {
+/** Show the popup immediately with a skeleton sized to the
+ *  expected translation. */
+function showSkeleton(sourceText) {
   const el = getPopup();
-  const trans = el.querySelector(".pt-popup__trans");
-  trans.classList.add("pt-popup__trans--skeleton");
-  trans.classList.remove("pt-popup__error");
-  trans.textContent = " ";
-  // Provider badge is hidden while loading.
+  const oldBody = el.querySelector(".pt-popup__body");
+  const newBody = buildSkeleton(sourceText);
+  if (oldBody) el.replaceChild(newBody, oldBody);
+  else el.appendChild(newBody);
+  // Hide provider while loading.
   showProvider("");
+  // Force layout to measure the skeleton before positioning.
+  void el.offsetHeight;
+  readSizes();
   showPopup();
   if (pendingPos) {
     cancelAnimationFrame(rafId);
@@ -361,20 +383,36 @@ function showSkeleton() {
 
 function renderPayload(payload) {
   const el = getPopup();
-  const trans = el.querySelector(".pt-popup__trans");
+  // Replace the skeleton with the real text element. The text
+  // starts with opacity:0 then transitions to 1, while the
+  // skeleton (if still in the DOM) is removed in the same tick,
+  // giving a clean cross-fade.
+  const oldBody = el.querySelector(".pt-popup__body");
+  const newBody = document.createElement("div");
+  newBody.className = "pt-popup__body";
 
-  trans.classList.remove("pt-popup__trans--skeleton");
-  trans.classList.remove("pt-popup__error");
-
+  const trans = document.createElement("div");
+  trans.className = "pt-popup__trans";
   if (payload && payload.translatedText) {
     trans.textContent = payload.translatedText;
-    showProvider(payload.provider || "");
   } else {
     trans.textContent = (payload && payload.error) || "Translation failed";
     trans.classList.add("pt-popup__error");
-    showProvider("");
   }
+  newBody.appendChild(trans);
 
+  if (oldBody) el.replaceChild(newBody, oldBody);
+  else el.appendChild(newBody);
+
+  // Trigger layout so the transition fires from the freshly
+  // inserted node, then add the ready class on the next frame.
+  void trans.offsetHeight;
+  requestAnimationFrame(() => {
+    trans.classList.add("pt-popup__trans--ready");
+  });
+
+  showProvider(payload && payload.provider ? payload.provider : "");
+  readSizes();
   showPopup();
   if (pendingPos) {
     cancelAnimationFrame(rafId);
@@ -420,21 +458,13 @@ function onCursorSample() {
   if (text === lastText) return;
   lastText = text;
 
-  // Text under the cursor just changed. Hide the old popup right
-  // away — it will be replaced once the new dwell timer fires.
   hidePopup();
-  // Bump inFlight so any pending response for the old text is
-  // discarded when it arrives.
   inFlight++;
 
-  // Require the cursor to rest on the same text for HOVER_DELAY_MS
-  // before the popup is shown.
   if (hoverTimer) clearTimeout(hoverTimer);
   hoverTimer = setTimeout(() => {
     if (debounceTimer) clearTimeout(debounceTimer);
-    // Show skeleton immediately, then fire the request. The
-    // response will replace the skeleton with the real text.
-    showSkeleton();
+    showSkeleton(text);
     debounceTimer = setTimeout(() => {
       requestTranslation(text);
     }, DEBOUNCE_MS);
@@ -457,7 +487,7 @@ function onSelectionChange() {
   lastText = text;
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
-    showSkeleton();
+    showSkeleton(text);
     requestTranslation(text);
   }, DEBOUNCE_MS);
 }
