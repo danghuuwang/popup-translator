@@ -1,20 +1,33 @@
 /**
  * Content script — hover any text to translate.
- * Listens for mousemove (captured at window level for reliability),
- * debounces 300ms, sends a translate request to the background
- * service worker, and renders a styled popup near the cursor. The
- * popup shows only the translated text plus a small provider tag
- * beneath; no source text and no intermediate loading state.
+ *
+ * Text pickup (mirrors the reference extension Từ điển ENVI):
+ *   1. document.caretRangeFromPoint(x, y) → a Range anchored at the
+ *      caret position under the cursor.
+ *   2. If startContainer is not a text node, abort (extension
+ *      original also bails out in this case).
+ *   3. Range.expand("sentence") extends the range to the closest
+ *      sentence boundaries, which gives line-by-line granularity
+ *      inside multi-sentence paragraphs.
+ *   4. Discard the result if the range's bounding rect no longer
+ *      contains the cursor (handles edge cases at line breaks).
+ *
+ * Positioning: tracked in a single rAF callback, applied with
+ * transform: translate3d so the popup glides with the cursor and
+ * never triggers layout. The popup sits above the cursor,
+ * horizontally centered on it, and flips below if it would clip
+ * the top edge.
  */
 
 import "./popup.css";
 
-const DEBOUNCE_MS = 300;
-const MAX_TEXT_LEN = 500;
+const POLL_MS = 250;          // 4Hz position poll, matches reference ext (700ms was too slow)
+const DEBOUNCE_MS = 220;      // debounce rapid text changes
 const MIN_TEXT_LEN = 2;
+const MAX_TEXT_LEN = 500;
 const HIDE_DELAY_MS = 1500;
-const OFFSET_X = 14;
-const OFFSET_Y = 18;
+const POPUP_OFFSET_Y = 16;
+const POPUP_GUTTER = 8;
 const POPUP_ID = "__pt_popup_root__";
 
 /** @type {{sl: string, tl: string, hoverEnabled: boolean, theme: 'light'|'dark'}} */
@@ -25,15 +38,18 @@ let settings = {
   theme: "light",
 };
 
-let currentNode = null;
+let lastX = 0;
+let lastY = 0;
 let lastText = "";
 let debounceTimer = null;
 let hideTimer = null;
 let inFlight = 0;
+let pollTimer = 0;
+let pendingPos = null;
+let rafId = 0;
 
 console.log("[Popup Translator] content script loaded");
 
-/** Lazily create or fetch the singleton popup element. */
 function getPopup() {
   let root = document.getElementById(POPUP_ID);
   if (root) return root;
@@ -74,38 +90,73 @@ function applyTheme() {
   el.classList.toggle("pt-popup--dark", settings.theme === "dark");
 }
 
-/** Extract a meaningful text snippet from the hovered element. */
-function extractText(el) {
-  if (!el) return "";
-  if (el.closest && el.closest(`#${POPUP_ID}`)) return "";
-  if (el.nodeType === Node.TEXT_NODE) {
-    el = el.parentElement;
-  }
-  if (!el || !el.textContent) return "";
+/**
+ * Pick the text of the sentence under (x, y). Returns "" if the
+ * point is not over a text node or the resulting range's rect
+ * doesn't contain the cursor.
+ */
+function extractTextAt(x, y) {
+  if (typeof document.caretRangeFromPoint !== "function") return "";
+  const r = document.caretRangeFromPoint(x, y);
+  if (!r || r.startContainer.nodeType !== Node.TEXT_NODE) return "";
 
-  const raw = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
-  if (raw.length < MIN_TEXT_LEN) return "";
-  if (raw.length > MAX_TEXT_LEN) return raw.slice(0, MAX_TEXT_LEN);
-  return raw;
+  // Expand to sentence boundaries. This is the key line that gives
+  // line-by-line (or rather sentence-by-sentence) translation inside
+  // a multi-sentence paragraph.
+  try {
+    if (typeof r.expand === "function") {
+      r.expand("sentence");
+    }
+  } catch (_) {
+    // some browsers throw if the range cannot be expanded; ignore.
+  }
+
+  const rect = r.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return "";
+  if (rect.left > x || rect.right < x || rect.top > y || rect.bottom < y) {
+    return "";
+  }
+
+  let txt = r.toString().replace(/\s+/g, " ").trim();
+  if (txt.length < MIN_TEXT_LEN) return "";
+  if (txt.length > MAX_TEXT_LEN) txt = txt.slice(0, MAX_TEXT_LEN);
+  return txt;
 }
 
-function positionPopup(clientX, clientY) {
+function positionPopup(x, y) {
+  pendingPos = { x, y };
+  if (rafId) return;
+  rafId = requestAnimationFrame(applyPendingPos);
+}
+
+function applyPendingPos() {
+  rafId = 0;
+  if (!pendingPos) return;
+  const { x, y } = pendingPos;
+  pendingPos = null;
+
   const el = getPopup();
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
+  const vw = document.documentElement.clientWidth;
+  const vh = document.documentElement.clientHeight;
+
+  // Park off-screen while we measure, so getBoundingClientRect
+  // returns the natural size with the new content.
+  el.style.transform = "translate3d(-9999px, -9999px, 0)";
   const rect = el.getBoundingClientRect();
-  const w = rect.width || 280;
+  const w = rect.width || 320;
   const h = rect.height || 60;
 
-  let x = clientX + OFFSET_X;
-  let y = clientY + OFFSET_Y;
-  if (x + w > vw - 8) x = clientX - w - OFFSET_X;
-  if (y + h > vh - 8) y = clientY - h - OFFSET_Y;
-  if (x < 8) x = 8;
-  if (y < 8) y = 8;
+  let px = x - w / 2;
+  if (px < POPUP_GUTTER) px = POPUP_GUTTER;
+  if (px + w > vw - POPUP_GUTTER) px = vw - w - POPUP_GUTTER;
 
-  el.style.left = `${x}px`;
-  el.style.top = `${y}px`;
+  // Above the cursor; flip below if it would clip the top.
+  let py = y - h - POPUP_OFFSET_Y;
+  if (py < POPUP_GUTTER) py = y + POPUP_OFFSET_Y;
+  if (py + h > vh - POPUP_GUTTER) py = vh - h - POPUP_GUTTER;
+  if (py < POPUP_GUTTER) py = POPUP_GUTTER;
+
+  el.style.transform = `translate3d(${px}px, ${py}px, 0)`;
 }
 
 function renderPayload(payload) {
@@ -125,6 +176,9 @@ function renderPayload(payload) {
     provider.style.display = "none";
   }
   showPopup();
+  // Re-measure + re-position immediately so the new content
+  // doesn't bleed out of the viewport.
+  if (pendingPos) applyPendingPos();
 }
 
 function scheduleHide() {
@@ -132,7 +186,7 @@ function scheduleHide() {
   hideTimer = setTimeout(hidePopup, HIDE_DELAY_MS);
 }
 
-async function requestTranslation(text, clientX, clientY) {
+async function requestTranslation(text) {
   const callId = ++inFlight;
   hidePopup();
   try {
@@ -142,35 +196,39 @@ async function requestTranslation(text, clientX, clientY) {
       sl: settings.sl,
       tl: settings.tl,
     });
-    if (callId !== inFlight) return; // a newer request superseded this one
-    positionPopup(clientX, clientY);
+    if (callId !== inFlight) return;
     renderPayload(res || {});
   } catch (err) {
     if (callId !== inFlight) return;
-    positionPopup(clientX, clientY);
     renderPayload({ error: err?.message || String(err) });
   }
 }
 
-function onMouseMove(e) {
+/** Position-only update (no text extraction, no debounce). */
+function trackCursor(x, y) {
+  lastX = x;
+  lastY = y;
+  positionPopup(x, y);
+}
+
+/** Full update: track + extract + maybe translate. */
+function onCursorSample() {
   if (!settings.hoverEnabled) return;
+  if (document.visibilityState !== "visible") return;
+  if (document.getElementById(POPUP_ID) && document.activeElement === document.getElementById(POPUP_ID)) return;
 
-  // Always reposition the popup so it tracks the cursor smoothly,
-  // even while waiting for a new translation. This is the behavior
-  // the reference extension ships: the tooltip follows the mouse.
-  positionPopup(e.clientX, e.clientY);
+  trackCursor(lastX, lastY);
 
-  const target = e.target;
-  if (!target) return;
-
-  const text = extractText(target);
+  const text = extractTextAt(lastX, lastY);
   if (!text) {
     scheduleHide();
     return;
   }
-  if (text === lastText && target === currentNode) return;
+  if (text === lastText) {
+    // Same sentence as last sample; nothing to do.
+    return;
+  }
   lastText = text;
-  currentNode = target;
 
   if (hideTimer) {
     clearTimeout(hideTimer);
@@ -178,8 +236,24 @@ function onMouseMove(e) {
   }
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
-    requestTranslation(text, e.clientX, e.clientY);
+    requestTranslation(text);
   }, DEBOUNCE_MS);
+}
+
+function onMouseMove(e) {
+  lastX = e.clientX;
+  lastY = e.clientY;
+  // Move the popup immediately on every mouse event for max
+  // smoothness; extract text only on the polling tick.
+  trackCursor(lastX, lastY);
+}
+
+function onMouseLeaveWindow() {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+  scheduleHide();
 }
 
 function onSelectionChange() {
@@ -188,9 +262,11 @@ function onSelectionChange() {
   if (!sel || sel.isCollapsed) return;
   const text = sel.toString().trim();
   if (text.length < MIN_TEXT_LEN) return;
+  if (text === lastText) return;
+  lastText = text;
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
-    requestTranslation(text, window.innerWidth / 2, window.innerHeight / 2);
+    requestTranslation(text);
   }, DEBOUNCE_MS);
 }
 
@@ -221,9 +297,15 @@ try {
   });
 } catch (e) {}
 
-// Capture phase + window for cross-frame reliability and to beat
-// page-level handlers that may call stopPropagation.
+// Move the popup on every mouse event (smoothest possible).
 window.addEventListener("mousemove", onMouseMove, { passive: true, capture: true });
+window.addEventListener("mouseout", (e) => {
+  if (!e.relatedTarget && !e.toElement) onMouseLeaveWindow();
+});
+// Poll for text under the cursor at POLL_MS intervals, like the
+// reference extension does. mousemove is too noisy to run
+// extractTextAt on every event.
+pollTimer = setInterval(onCursorSample, POLL_MS);
 document.addEventListener("selectionchange", onSelectionChange);
 
 loadSettings();
