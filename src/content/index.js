@@ -26,6 +26,7 @@ import "./popup.css";
 
 const POLL_MS = 200;
 const DEBOUNCE_MS = 220;
+const HOVER_DELAY_MS = 500;
 const MIN_TEXT_LEN = 2;
 const MAX_TEXT_LEN = 500;
 const POPUP_OFFSET_Y = 12;
@@ -44,6 +45,7 @@ let lastX = 0;
 let lastY = 0;
 let lastText = "";
 let debounceTimer = null;
+let hoverTimer = null;
 let inFlight = 0;
 let pendingPos = null;
 let rafId = 0;
@@ -342,21 +344,36 @@ function onCursorSample() {
   const text = extractTextAt(lastX, lastY);
   if (!text) {
     hidePopup();
+    if (hoverTimer) {
+      clearTimeout(hoverTimer);
+      hoverTimer = null;
+    }
     return;
   }
   if (text === lastText) return;
   lastText = text;
 
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    requestTranslation(text);
-  }, DEBOUNCE_MS);
+  // Require the cursor to rest on the same text for HOVER_DELAY_MS
+  // before we even consider showing the popup.
+  if (hoverTimer) clearTimeout(hoverTimer);
+  hoverTimer = setTimeout(() => {
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      requestTranslation(text);
+    }, DEBOUNCE_MS);
+  }, HOVER_DELAY_MS);
 }
 
 function onMouseMove(e) {
   lastX = e.clientX;
   lastY = e.clientY;
   positionPopup(lastX, lastY);
+  // Any mouse movement invalidates a pending hover trigger — the
+  // user is still scanning. The next onCursorSample will reset it.
+  if (hoverTimer) {
+    clearTimeout(hoverTimer);
+    hoverTimer = null;
+  }
 }
 
 function onSelectionChange() {
