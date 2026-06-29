@@ -34,9 +34,9 @@ const DEBOUNCE_MS = 220;
 const HOVER_DELAY_MS = 500;
 const MIN_TEXT_LEN = 2;
 const MAX_TEXT_LEN = 500;
-const POPUP_OFFSET_Y = 12;
+const POPUP_OFFSET_Y = 14;
 const POPUP_GUTTER = 8;
-const PROVIDER_GAP = 8;
+const PROVIDER_GAP = 12;
 const POPUP_ID = "__pt_popup_root__";
 const PROVIDER_ID = "__pt_popup_provider__";
 
@@ -131,8 +131,15 @@ function showProvider(text) {
   } else {
     p.classList.remove("pt-popup--visible");
   }
-  providerW = p.offsetWidth || providerW;
-  providerH = p.offsetHeight || providerH;
+  // Force the browser to layout the new content before we read the
+  // size, so position() can place the badge with the correct width.
+  void p.offsetHeight;
+  providerW = p.offsetWidth || providerW || 60;
+  providerH = p.offsetHeight || providerH || 18;
+  console.log(
+    "[Popup Translator] provider:",
+    JSON.stringify({ text, providerW, providerH, transform: p.style.transform })
+  );
 }
 
 function applyTheme() {
@@ -371,14 +378,11 @@ function showSkeleton(sourceText) {
   void el.offsetHeight;
   readSizes();
   showPopup();
-  if (pendingPos) {
-    cancelAnimationFrame(rafId);
-    rafId = requestAnimationFrame(applyPendingPos);
-  } else {
-    pendingPos = { x: lastX, y: lastY };
-    cancelAnimationFrame(rafId);
-    rafId = requestAnimationFrame(applyPendingPos);
-  }
+  // Force a re-position immediately so the skeleton lands at the
+  // cursor with the correct dimensions, even when stationary.
+  if (!pendingPos) pendingPos = { x: lastX, y: lastY };
+  cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(applyPendingPos);
 }
 
 function renderPayload(payload) {
@@ -411,17 +415,18 @@ function renderPayload(payload) {
     trans.classList.add("pt-popup__trans--ready");
   });
 
+  // Show the provider chip with the new label. showProvider()
+  // updates providerW/H so the next applyPendingPos lands the
+  // badge at the right coordinates.
   showProvider(payload && payload.provider ? payload.provider : "");
   readSizes();
   showPopup();
-  if (pendingPos) {
-    cancelAnimationFrame(rafId);
-    rafId = requestAnimationFrame(applyPendingPos);
-  } else {
-    pendingPos = { x: lastX, y: lastY };
-    cancelAnimationFrame(rafId);
-    rafId = requestAnimationFrame(applyPendingPos);
-  }
+  // Force a re-position immediately so the badge and the new
+  // popup text land at the cursor with their fresh sizes, even
+  // when the cursor is stationary.
+  if (!pendingPos) pendingPos = { x: lastX, y: lastY };
+  cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(applyPendingPos);
 }
 
 async function requestTranslation(text) {
