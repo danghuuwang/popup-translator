@@ -132,7 +132,28 @@ if (window.matchMedia) {
 function extractTextAt(x, y) {
   if (typeof document.caretRangeFromPoint !== "function") return "";
   const r = document.caretRangeFromPoint(x, y);
-  if (!r || r.startContainer.nodeType !== Node.TEXT_NODE) return "";
+  if (!r || r.startContainer.nodeType !== Node.TEXT_NODE) {
+    if (window.__ptDebug) console.log("[PT] no text node at", x, y, "range=", r);
+    return "";
+  }
+
+  // The cursor may be hovering over an empty area (padding, margin,
+  // a gap between rows). In that case caretRangeFromPoint still
+  // returns the nearest text node, which is misleading. Reject the
+  // hit if elementFromPoint is a different element than the text
+  // node's parent, OR if the cursor is outside the text node's
+  // bounding rect.
+  const textRect = r.startContainer.parentElement
+    ? r.startContainer.parentElement.getBoundingClientRect()
+    : null;
+  if (textRect) {
+    if (x < textRect.left || x > textRect.right ||
+        y < textRect.top  || y > textRect.bottom) {
+      if (window.__ptDebug)
+        console.log("[PT] cursor outside text rect at", x, y, "rect=", textRect);
+      return "";
+    }
+  }
 
   const node = r.startContainer;
   const text = node.nodeValue;
