@@ -140,17 +140,36 @@ function extractTextAt(x, y) {
   // The cursor may be hovering over an empty area (padding, margin,
   // a gap between rows). In that case caretRangeFromPoint still
   // returns the nearest text node, which is misleading. Reject the
-  // hit if elementFromPoint is a different element than the text
-  // node's parent, OR if the cursor is outside the text node's
-  // bounding rect.
-  const textRect = r.startContainer.parentElement
-    ? r.startContainer.parentElement.getBoundingClientRect()
-    : null;
-  if (textRect) {
-    if (x < textRect.left || x > textRect.right ||
-        y < textRect.top  || y > textRect.bottom) {
+  // hit if the cursor is outside the rendered text glyphs.
+  //
+  // We use Range.getBoundingClientRect() on a range that spans the
+  // whole text node. That gives us the union of all line boxes
+  // for the actual rendered text, which is a tight fit around the
+  // glyphs (much tighter than parentElement.getBoundingClientRect
+  // for inline elements with padding, or for a parent block that
+  // has whitespace-only children).
+  let textRange = null;
+  try {
+    textRange = document.createRange();
+    textRange.selectNodeContents(r.startContainer);
+  } catch (e) {
+    textRange = null;
+  }
+  if (textRange) {
+    const rects = textRange.getClientRects();
+    let hit = false;
+    for (let i = 0; i < rects.length; i++) {
+      const r2 = rects[i];
+      if (r2.width === 0 && r2.height === 0) continue;
+      if (x >= r2.left && x <= r2.right &&
+          y >= r2.top  && y <= r2.bottom) {
+        hit = true;
+        break;
+      }
+    }
+    if (!hit && rects.length > 0) {
       if (window.__ptDebug)
-        console.log("[PT] cursor outside text rect at", x, y, "rect=", textRect);
+        console.log("[PT] cursor outside text rects at", x, y, "rects=", rects.length);
       return "";
     }
   }
