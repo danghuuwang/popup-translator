@@ -484,18 +484,12 @@ function onMouseMove(e) {
 }
 
 function onSelectionChange() {
-  if (!settings.hoverEnabled) return;
-  const sel = window.getSelection && window.getSelection();
-  if (!sel || sel.isCollapsed) return;
-  const text = sel.toString().trim();
-  if (text.length < MIN_TEXT_LEN) return;
-  if (text === lastText) return;
-  lastText = text;
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    showSkeleton(text);
-    requestTranslation(text);
-  }, DEBOUNCE_MS);
+  // Intentionally empty: we don't trigger translations from
+  // selectionchange. The hover flow (onCursorSample) is the
+  // single source of truth for when to translate, because
+  // selectionchange can fire when the page moves the selection
+  // (e.g. clicking outside, or a previous selection still
+  // existing) even though the user never hovered over it.
 }
 
 function loadSettings() {
