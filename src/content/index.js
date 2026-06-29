@@ -1,15 +1,16 @@
 /**
  * Content script — hover any text to translate.
- * Listens for mousemove, debounces 300ms, sends a translate request to
- * the background service worker, and renders a styled popup near the
- * cursor. Avoids duplicate popups, escapes viewport edges, and reacts
- * to live setting changes from chrome.storage.
+ * Listens for mousemove (captured at window level for reliability),
+ * debounces 300ms, sends a translate request to the background
+ * service worker, and renders a styled popup near the cursor. Avoids
+ * duplicate popups, escapes viewport edges, and reacts to live
+ * setting changes from chrome.storage.
  */
 
 import "./popup.css";
 
 const DEBOUNCE_MS = 300;
-const MAX_TEXT_LEN = 280;
+const MAX_TEXT_LEN = 500;
 const MIN_TEXT_LEN = 2;
 const HIDE_DELAY_MS = 1500;
 const OFFSET_X = 14;
@@ -30,6 +31,8 @@ let debounceTimer = null;
 let hideTimer = null;
 let inFlight = 0;
 
+console.log("[Popup Translator] content script loaded");
+
 /** Lazily create or fetch the singleton popup element. */
 function getPopup() {
   let root = document.getElementById(POPUP_ID);
@@ -47,6 +50,7 @@ function getPopup() {
 
   const trans = document.createElement("div");
   trans.className = "pt-popup__trans";
+  trans.textContent = "";
   root.appendChild(trans);
 
   const provider = document.createElement("span");
@@ -77,20 +81,17 @@ function applyTheme() {
 
 /** Extract a meaningful text snippet from the hovered element. */
 function extractText(el) {
-  if (!el || el.closest && el.closest(`#${POPUP_ID}`)) return "";
+  if (!el) return "";
+  if (el.closest && el.closest(`#${POPUP_ID}`)) return "";
   if (el.nodeType === Node.TEXT_NODE) {
     el = el.parentElement;
   }
   if (!el || !el.textContent) return "";
 
-  const raw = (el.innerText || el.textContent || "").trim();
+  const raw = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
   if (raw.length < MIN_TEXT_LEN) return "";
   if (raw.length > MAX_TEXT_LEN) return raw.slice(0, MAX_TEXT_LEN);
   return raw;
-}
-
-function isSameAsLast(text, node) {
-  return text === lastText && node === currentNode;
 }
 
 function positionPopup(clientX, clientY) {
@@ -112,6 +113,19 @@ function positionPopup(clientX, clientY) {
   el.style.top = `${y}px`;
 }
 
+function renderLoading(text) {
+  const el = getPopup();
+  const src = el.querySelector(".pt-popup__src");
+  const trans = el.querySelector(".pt-popup__trans");
+  const provider = el.querySelector(".pt-popup__provider");
+
+  src.textContent = text;
+  trans.classList.remove("pt-popup__error");
+  trans.textContent = "Translating...";
+  provider.style.display = "none";
+  showPopup();
+}
+
 function renderPayload(payload, text) {
   const el = getPopup();
   const src = el.querySelector(".pt-popup__src");
@@ -126,7 +140,7 @@ function renderPayload(payload, text) {
     provider.textContent = payload.provider || "";
     provider.style.display = payload.provider ? "inline-block" : "none";
   } else {
-    trans.textContent = "Translation failed";
+    trans.textContent = (payload && payload.error) || "Translation failed";
     trans.classList.add("pt-popup__error");
     provider.style.display = "none";
   }
@@ -138,8 +152,10 @@ function scheduleHide() {
   hideTimer = setTimeout(hidePopup, HIDE_DELAY_MS);
 }
 
-async function requestTranslation(text) {
+async function requestTranslation(text, clientX, clientY) {
   const callId = ++inFlight;
+  positionPopup(clientX, clientY);
+  renderLoading(text);
   try {
     const res = await chrome.runtime.sendMessage({
       type: "translate",
@@ -148,9 +164,11 @@ async function requestTranslation(text) {
       tl: settings.tl,
     });
     if (callId !== inFlight) return; // a newer request superseded this one
-    renderPayload(res, text);
+    positionPopup(clientX, clientY);
+    renderPayload(res || {}, text);
   } catch (err) {
     if (callId !== inFlight) return;
+    positionPopup(clientX, clientY);
     renderPayload({ error: err?.message || String(err) }, text);
   }
 }
@@ -166,64 +184,65 @@ function onMouseMove(e) {
     scheduleHide();
     return;
   }
-  if (isSameAsLast(text, target)) {
+  if (text === lastText && target === currentNode) {
     positionPopup(e.clientX, e.clientY);
     return;
   }
   lastText = text;
   currentNode = target;
 
-  if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    positionPopup(e.clientX, e.clientY);
-    requestTranslation(text);
-  }, DEBOUNCE_MS);
-
   if (hideTimer) {
     clearTimeout(hideTimer);
     hideTimer = null;
   }
-}
-
-function onMouseLeaveDocument() {
-  if (debounceTimer) {
-    clearTimeout(debounceTimer);
-    debounceTimer = null;
-  }
-  scheduleHide();
+  if (debounceTimer) clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(() => {
+    requestTranslation(text, e.clientX, e.clientY);
+  }, DEBOUNCE_MS);
 }
 
 function onSelectionChange() {
+  if (!settings.hoverEnabled) return;
   const sel = window.getSelection && window.getSelection();
   if (!sel || sel.isCollapsed) return;
   const text = sel.toString().trim();
   if (text.length < MIN_TEXT_LEN) return;
   if (debounceTimer) clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => requestTranslation(text), DEBOUNCE_MS);
+  debounceTimer = setTimeout(() => {
+    requestTranslation(text, window.innerWidth / 2, window.innerHeight / 2);
+  }, DEBOUNCE_MS);
 }
 
 function loadSettings() {
-  chrome.storage.local.get(
-    { sl: "auto", tl: "vi", hoverEnabled: true, theme: "light" },
-    (items) => {
-      settings = { ...settings, ...items };
-      applyTheme();
-    }
-  );
+  try {
+    chrome.storage.local.get(
+      { sl: "auto", tl: "vi", hoverEnabled: true, theme: "light" },
+      (items) => {
+        if (chrome.runtime.lastError) return;
+        settings = { ...settings, ...items };
+        applyTheme();
+      }
+    );
+  } catch (e) {
+    // storage may not be available on some pages
+  }
 }
 
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local") return;
-  for (const key of Object.keys(changes)) {
-    if (key in settings) {
-      settings[key] = changes[key].newValue;
+try {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    for (const key of Object.keys(changes)) {
+      if (key in settings) {
+        settings[key] = changes[key].newValue;
+      }
     }
-  }
-  applyTheme();
-});
+    applyTheme();
+  });
+} catch (e) {}
 
-document.addEventListener("mousemove", onMouseMove, { passive: true });
-document.addEventListener("mouseleave", onMouseLeaveDocument);
+// Capture phase + window for cross-frame reliability and to beat
+// page-level handlers that may call stopPropagation.
+window.addEventListener("mousemove", onMouseMove, { passive: true, capture: true });
 document.addEventListener("selectionchange", onSelectionChange);
 
 loadSettings();

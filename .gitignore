@@ -4,3 +4,6 @@ dist/
 *.log
 .idea/
 .vscode/
+bun.lock
+package-lock.json
+yarn.lock
