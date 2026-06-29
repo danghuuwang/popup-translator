@@ -138,116 +138,60 @@ function extractTextAt(x, y) {
   const text = node.nodeValue;
   if (!text) return "";
 
-  try {
-    if (typeof r.expand === "function") {
-      r.expand("sentence");
-      const rect = r.getBoundingClientRect();
-      if (
-        rect.width > 0 && rect.height > 0 &&
-        rect.left <= x && rect.right >= x &&
-        rect.top <= y && rect.bottom >= y
-      ) {
-        const out = r.toString().replace(/\s+/g, " ").trim();
-        if (out.length >= MIN_TEXT_LEN) {
-          return out.length > MAX_TEXT_LEN ? out.slice(0, MAX_TEXT_LEN) : out;
-        }
-      }
-    }
-  } catch (_) {
-    // "sentence" unit not supported; fall through.
-  }
-
-  const fullRange = document.createRange();
-  fullRange.setStart(node, 0);
-  fullRange.setEnd(node, text.length);
-  const rects = fullRange.getClientRects();
-  if (!rects || rects.length === 0) {
-    return pickSentence(text, x, 0, text.length, node);
-  }
-
-  let bestRect = null;
-  let bestDist = Infinity;
-  for (let i = 0; i < rects.length; i++) {
-    const rect = rects[i];
-    if (rect.height === 0 || rect.width === 0) continue;
-    if (y >= rect.top && y <= rect.bottom) {
-      bestRect = rect;
-      break;
-    }
-    const mid = (rect.top + rect.bottom) / 2;
-    const d = Math.abs(mid - y);
-    if (d < bestDist) {
-      bestDist = d;
-      bestRect = rect;
+  // r.startOffset is the exact character index of the caret within
+  // the text node. We split the node value on sentence terminators,
+  // walk the resulting segments, and return the one whose [start,
+  // end] range contains r.startOffset. This is precise and
+  // independent of the cursor's X — the caret offset is the
+  // authoritative position.
+  const caret = Math.max(0, Math.min(text.length, r.startOffset));
+  const segments = splitSentencesWithOffsets(text);
+  for (const seg of segments) {
+    if (caret >= seg.start && caret <= seg.end) {
+      const out = seg.text;
+      if (out.length < MIN_TEXT_LEN) return "";
+      return out.length > MAX_TEXT_LEN ? out.slice(0, MAX_TEXT_LEN) : out;
     }
   }
-  if (!bestRect) bestRect = rects[0];
-
-  const lo = findOffsetAtX(node, text, bestRect.left, 0, text.length, "left");
-  const hi = findOffsetAtX(node, text, bestRect.right, lo, text.length, "right");
-  return pickSentence(text, x, lo, hi, node);
+  // Fallback if the offset falls in a gap between segments.
+  return "";
 }
 
-function pickSentence(text, x, lo, hi, node) {
-  const slice = text.slice(lo, hi).replace(/\s+/g, " ").trim();
-  if (slice.length < MIN_TEXT_LEN) return "";
-  const sentences = slice
-    .split(/(?<=[.!?])\s+|\n+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (sentences.length <= 1) {
-    return slice.length > MAX_TEXT_LEN ? slice.slice(0, MAX_TEXT_LEN) : slice;
-  }
-
-  let lineLeft = 0;
-  let lineRight = 1;
-  if (node) {
-    const r1 = document.createRange();
-    r1.setStart(node, lo);
-    r1.setEnd(node, lo + 1);
-    lineLeft = r1.getBoundingClientRect().left;
-    const r2 = document.createRange();
-    r2.setStart(node, hi - 1);
-    r2.setEnd(node, hi);
-    lineRight = r2.getBoundingClientRect().right;
-  }
-  const lineWidth = Math.max(1, lineRight - lineLeft);
-  const ratio = Math.max(0, Math.min(1, (x - lineLeft) / lineWidth));
-
-  let acc = 0;
-  let best = sentences[0];
-  let bestDelta = Infinity;
-  for (const s of sentences) {
-    const startRatio = acc / slice.length;
-    const endRatio = (acc + s.length) / slice.length;
-    const d =
-      ratio < startRatio
-        ? startRatio - ratio
-        : ratio > endRatio
-        ? ratio - endRatio
-        : 0;
-    if (d < bestDelta) {
-      bestDelta = d;
-      best = s;
+/** Split text on sentence terminators and remember each segment's
+ *  [start, end) character offsets in the original string. */
+function splitSentencesWithOffsets(text) {
+  const segments = [];
+  // Regex matches either a sentence terminator followed by
+  // whitespace, or a run of whitespace / newlines. We walk
+  // matches and build segments in between.
+  const re = /[.!?]+["')\]]*\s+|\n+/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    const seg = text.slice(last, m.index + m[0].search(/\S|$/));
+    const trimmed = seg.replace(/\s+/g, " ").trim();
+    if (trimmed) {
+      // Compute offset of the trimmed start in the original text.
+      const leadingWs = seg.match(/^\s*/)[0].length;
+      const start = last + leadingWs;
+      const end = m.index + m[0].length;
+      segments.push({ text: trimmed, start, end });
     }
-    acc += s.length;
+    last = m.index + m[0].length;
   }
-
-  return best.length > MAX_TEXT_LEN ? best.slice(0, MAX_TEXT_LEN) : best;
-}
-
-function findOffsetAtX(node, text, targetX, lo, hi, side) {
-  while (lo < hi - 1) {
-    const mid = (lo + hi) >>> 1;
-    const r = document.createRange();
-    r.setStart(node, lo);
-    r.setEnd(node, mid);
-    const rect = r.getBoundingClientRect();
-    const x = side === "left" ? rect.left : rect.right;
-    if (x < targetX) lo = mid;
-    else hi = mid;
+  if (last < text.length) {
+    const seg = text.slice(last);
+    const trimmed = seg.replace(/\s+/g, " ").trim();
+    if (trimmed) {
+      const leadingWs = seg.match(/^\s*/)[0].length;
+      segments.push({
+        text: trimmed,
+        start: last + leadingWs,
+        end: text.length,
+      });
+    }
   }
-  return lo;
+  return segments;
 }
 
 /** Build skeleton lines sized to roughly match the expected
