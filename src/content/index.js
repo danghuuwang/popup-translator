@@ -1,25 +1,29 @@
 /**
  * Content script — hover any text to translate.
  *
- * Positioning model (mirrors the reference extension Từ điển ENVI):
- *   The popup is a single fixed-positioned div, updated on every
- *   mousemove via requestAnimationFrame. We compute (x, y) so that
- *   the popup sits *directly above* the cursor (no horizontal
- *   offset) and *horizontally centered* on the cursor's X. The
- *   popup's natural size is cached; we only re-measure when content
- *   changes. On regular mousemoves we update the transform in place,
- *   so the popup glides smoothly with no flicker.
+ * Two visual elements, both fixed-positioned at the document root:
+ *   - The translation popup (.pt-popup) with the translated text.
+ *   - The provider badge (.pt-popup__provider), docked at the
+ *     top-left of the popup with a small gap so it reads as a
+ *     separate chip rather than part of the popup body.
  *
- * Text pickup (mirrors the reference extension):
- *   1. document.caretRangeFromPoint(x, y) anchors a Range at the
- *      caret under the cursor.
- *   2. If the start container is not a text node, abort.
- *   3. We do NOT call Range.expand("sentence"): that's Gecko-only
- *      and Chrome throws on it. Instead we enumerate the text
- *      node's clientRects, find the visual line that vertically
- *      contains the cursor's Y, take that line's text, then split
- *      on sentence terminators to deliver sentence-level
- *      granularity.
+ * Hover flow:
+ *   1. document.caretRangeFromPoint finds the text node under the
+ *      cursor. The text is split on sentence terminators to give
+ *      sentence-level granularity inside a multi-sentence paragraph.
+ *   2. Once the cursor has rested on the same text for HOVER_DELAY_MS
+ *      (500ms), the popup appears immediately with a skeleton
+ *      placeholder. The translation request fires in parallel.
+ *   3. When the response arrives, the skeleton is replaced with the
+ *      translated text and the provider badge fades in.
+ *   4. Moving to a different text hides the popup right away; any
+ *      in-flight response for the old text is dropped.
+ *
+ * Positioning:
+ *   Both elements are updated on every mousemove via
+ *   requestAnimationFrame. The popup sits above the cursor, centered
+ *   horizontally. The provider badge is anchored to the popup's
+ *   top-left corner with a 12px gap.
  */
 
 import "./popup.css";
@@ -31,7 +35,9 @@ const MIN_TEXT_LEN = 2;
 const MAX_TEXT_LEN = 500;
 const POPUP_OFFSET_Y = 12;
 const POPUP_GUTTER = 8;
+const PROVIDER_GAP = 12;
 const POPUP_ID = "__pt_popup_root__";
+const PROVIDER_ID = "__pt_popup_provider__";
 
 /** @type {{sl: string, tl: string, hoverEnabled: boolean, theme: 'light'|'dark'|'system'}} */
 let settings = {
@@ -52,6 +58,9 @@ let rafId = 0;
 /** Cached size of the popup. */
 let popupW = 320;
 let popupH = 60;
+/** Cached size of the provider badge. */
+let providerW = 0;
+let providerH = 0;
 
 console.log("[Popup Translator] content script loaded");
 
@@ -66,21 +75,34 @@ function getPopup() {
   root.setAttribute("aria-hidden", "true");
 
   const trans = document.createElement("div");
-  trans.className = "pt-popup__trans";
+  trans.className = "pt-popup__trans pt-popup__trans--skeleton";
+  // Use a non-breaking space so the box has measurable width while
+  // the skeleton background animates.
+  trans.textContent = " ";
   root.appendChild(trans);
-
-  const provider = document.createElement("span");
-  provider.className = "pt-popup__provider";
-  root.appendChild(provider);
 
   (document.body || document.documentElement).appendChild(root);
   return root;
 }
 
-function readPopupSize() {
-  const el = getPopup();
-  popupW = el.offsetWidth || popupW || 320;
-  popupH = el.offsetHeight || popupH || 60;
+function getProvider() {
+  let p = document.getElementById(PROVIDER_ID);
+  if (p) return p;
+  p = document.createElement("span");
+  p.id = PROVIDER_ID;
+  p.className = "pt-popup__provider";
+  p.textContent = "";
+  (document.body || document.documentElement).appendChild(p);
+  return p;
+}
+
+function readSizes() {
+  const popup = getPopup();
+  popupW = popup.offsetWidth || popupW || 320;
+  popupH = popup.offsetHeight || popupH || 60;
+  const prov = getProvider();
+  providerW = prov.offsetWidth || providerW || 60;
+  providerH = prov.offsetHeight || providerH || 18;
 }
 
 function showPopup() {
@@ -91,13 +113,32 @@ function showPopup() {
 
 function hidePopup() {
   const el = document.getElementById(POPUP_ID);
-  if (!el) return;
-  el.classList.remove("pt-popup--visible");
-  el.setAttribute("aria-hidden", "true");
+  if (el) {
+    el.classList.remove("pt-popup--visible");
+    el.setAttribute("aria-hidden", "true");
+  }
+  const p = document.getElementById(PROVIDER_ID);
+  if (p) {
+    p.classList.remove("pt-popup--visible");
+  }
+}
+
+function showProvider(text) {
+  const p = getProvider();
+  p.textContent = text || "";
+  if (text) {
+    p.classList.add("pt-popup--visible");
+  } else {
+    p.classList.remove("pt-popup--visible");
+  }
+  // Re-measure so positioning reflects the new label width.
+  providerW = p.offsetWidth || providerW;
+  providerH = p.offsetHeight || providerH;
 }
 
 function applyTheme() {
-  const el = getPopup();
+  const popup = getPopup();
+  const prov = getProvider();
   let effective = settings.theme;
   if (!effective || effective === "system") {
     effective =
@@ -106,10 +147,11 @@ function applyTheme() {
         ? "dark"
         : "light";
   }
-  el.classList.toggle("pt-popup--dark", effective === "dark");
+  const isDark = effective === "dark";
+  popup.classList.toggle("pt-popup--dark", isDark);
+  prov.classList.toggle("pt-popup__provider--dark", isDark);
 }
 
-// React to system theme changes when the user picked "system".
 if (window.matchMedia) {
   try {
     window
@@ -125,21 +167,6 @@ if (window.matchMedia) {
 /**
  * Pick the sentence under (x, y). Returns "" if the cursor is not
  * over a text node.
- *
- * Strategy (matches the reference extension):
- *   1. document.caretRangeFromPoint anchors a Range at the caret.
- *   2. If startContainer is not a text node, abort.
- *   3. Try r.expand("sentence"). This is a Gecko-standard API that
- *      Chrome ≥ 109 also supports. It extends the Range to the
- *      nearest sentence boundaries, which is exactly what the
- *      reference extension does. If the browser doesn't support
- *      it (or throws), fall through to the rect-based splitter.
- *   4. Validate the expanded range's rect still contains the cursor
- *      before returning — otherwise the expansion drifted away.
- *   5. Fallback: enumerate the text node's clientRects, pick the
- *      visual line containing the cursor's Y, then split that line
- *      on sentence terminators and pick the sentence whose
- *      [start,end] band the cursor is over.
  */
 function extractTextAt(x, y) {
   if (typeof document.caretRangeFromPoint !== "function") return "";
@@ -156,9 +183,11 @@ function extractTextAt(x, y) {
     if (typeof r.expand === "function") {
       r.expand("sentence");
       const rect = r.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0 &&
-          rect.left <= x && rect.right >= x &&
-          rect.top <= y && rect.bottom >= y) {
+      if (
+        rect.width > 0 && rect.height > 0 &&
+        rect.left <= x && rect.right >= x &&
+        rect.top <= y && rect.bottom >= y
+      ) {
         const out = r.toString().replace(/\s+/g, " ").trim();
         if (out.length >= MIN_TEXT_LEN) {
           return out.length > MAX_TEXT_LEN ? out.slice(0, MAX_TEXT_LEN) : out;
@@ -213,9 +242,6 @@ function pickSentence(text, x, lo, hi, node) {
     return slice.length > MAX_TEXT_LEN ? slice.slice(0, MAX_TEXT_LEN) : slice;
   }
 
-  // Map the cursor's X to a relative position within the line, then
-  // pick the sentence whose [startRatio, endRatio] band contains it
-  // (or the nearest one).
   let lineLeft = 0;
   let lineRight = 1;
   if (node) {
@@ -281,58 +307,79 @@ function applyPendingPos() {
   const { x, y } = pendingPos;
   pendingPos = null;
 
+  readSizes();
   const el = getPopup();
+  const prov = getProvider();
   const vw = document.documentElement.clientWidth;
   const vh = document.documentElement.clientHeight;
 
-  // Read layout size at every rAF. offsetWidth/Height are not
-  // affected by the current transform, so this is safe to do
-  // without ever moving the popup off-screen — no flicker.
-  readPopupSize();
-
-  // Center horizontally on the cursor; clamp to viewport gutters.
+  // Center the popup horizontally on the cursor; clamp to gutters.
   let px = x - popupW / 2;
   if (px < POPUP_GUTTER) px = POPUP_GUTTER;
   if (px + popupW > vw - POPUP_GUTTER) px = vw - popupW - POPUP_GUTTER;
 
-  // Place directly above the cursor (offset_y = distance from the
-  // cursor to the popup's bottom edge). Flip below if it would
-  // clip the top of the viewport.
+  // Place above the cursor; flip below if it would clip the top.
   let py = y - popupH - POPUP_OFFSET_Y;
   if (py < POPUP_GUTTER) py = y + POPUP_OFFSET_Y;
   if (py + popupH > vh - POPUP_GUTTER) py = vh - popupH - POPUP_GUTTER;
   if (py < POPUP_GUTTER) py = POPUP_GUTTER;
 
   el.style.transform = `translate3d(${px}px, ${py}px, 0)`;
+
+  // Provider badge sits at the popup's top-left corner with a small
+  // gap so the two read as separate elements.
+  let ppx = px + PROVIDER_GAP;
+  let ppy = py - providerH + (providerH > 0 ? -PROVIDER_GAP : -PROVIDER_GAP);
+  // The badge should be tucked just above the popup's top edge.
+  ppy = py - providerH / 2;
+  if (ppx + providerW > vw - POPUP_GUTTER) ppx = vw - providerW - POPUP_GUTTER;
+  if (ppx < POPUP_GUTTER) ppx = POPUP_GUTTER;
+  if (ppy < POPUP_GUTTER) ppy = POPUP_GUTTER;
+
+  prov.style.transform = `translate3d(${ppx}px, ${ppy}px, 0)`;
 }
 
-function renderPayload(payload) {
+/** Show the popup immediately with a skeleton placeholder. */
+function showSkeleton() {
   const el = getPopup();
   const trans = el.querySelector(".pt-popup__trans");
-  const provider = el.querySelector(".pt-popup__provider");
-
+  trans.classList.add("pt-popup__trans--skeleton");
   trans.classList.remove("pt-popup__error");
-
-  if (payload && payload.translatedText) {
-    trans.textContent = payload.translatedText;
-    provider.textContent = payload.provider || "";
-    provider.style.display = payload.provider ? "inline-block" : "none";
-  } else {
-    trans.textContent = (payload && payload.error) || "Translation failed";
-    trans.classList.add("pt-popup__error");
-    provider.style.display = "none";
-  }
-
-  // Show the popup, then re-apply position so it lands at the
-  // cursor with the new content size.
+  trans.textContent = " ";
+  // Provider badge is hidden while loading.
+  showProvider("");
   showPopup();
   if (pendingPos) {
     cancelAnimationFrame(rafId);
     rafId = requestAnimationFrame(applyPendingPos);
   } else {
-    // No fresh mousemove is queued; re-position with the last
-    // known mouse position so the popup doesn't sit at the
-    // pre-render coordinates.
+    pendingPos = { x: lastX, y: lastY };
+    cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(applyPendingPos);
+  }
+}
+
+function renderPayload(payload) {
+  const el = getPopup();
+  const trans = el.querySelector(".pt-popup__trans");
+
+  trans.classList.remove("pt-popup__trans--skeleton");
+  trans.classList.remove("pt-popup__error");
+
+  if (payload && payload.translatedText) {
+    trans.textContent = payload.translatedText;
+    showProvider(payload.provider || "");
+  } else {
+    trans.textContent = (payload && payload.error) || "Translation failed";
+    trans.classList.add("pt-popup__error");
+    showProvider("");
+  }
+
+  showPopup();
+  if (pendingPos) {
+    cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(applyPendingPos);
+  } else {
     pendingPos = { x: lastX, y: lastY };
     cancelAnimationFrame(rafId);
     rafId = requestAnimationFrame(applyPendingPos);
@@ -341,7 +388,6 @@ function renderPayload(payload) {
 
 async function requestTranslation(text) {
   const callId = ++inFlight;
-  hidePopup();
   try {
     const res = await chrome.runtime.sendMessage({
       type: "translate",
@@ -375,20 +421,20 @@ function onCursorSample() {
   lastText = text;
 
   // Text under the cursor just changed. Hide the old popup right
-  // away — it will be replaced by the new translation once the
-  // dwell timer fires.
+  // away — it will be replaced once the new dwell timer fires.
   hidePopup();
-  if (inFlight) {
-    // Mark any in-flight request as stale by bumping the counter;
-    // its response will be ignored.
-    inFlight++;
-  }
+  // Bump inFlight so any pending response for the old text is
+  // discarded when it arrives.
+  inFlight++;
 
   // Require the cursor to rest on the same text for HOVER_DELAY_MS
-  // before we even consider showing the popup.
+  // before the popup is shown.
   if (hoverTimer) clearTimeout(hoverTimer);
   hoverTimer = setTimeout(() => {
     if (debounceTimer) clearTimeout(debounceTimer);
+    // Show skeleton immediately, then fire the request. The
+    // response will replace the skeleton with the real text.
+    showSkeleton();
     debounceTimer = setTimeout(() => {
       requestTranslation(text);
     }, DEBOUNCE_MS);
@@ -399,11 +445,6 @@ function onMouseMove(e) {
   lastX = e.clientX;
   lastY = e.clientY;
   positionPopup(lastX, lastY);
-  // Do not extract or invalidate the hover timer here. The polling
-  // tick (onCursorSample) is the single source of truth for "what
-  // text is under the cursor" and for arming/clearing the dwell
-  // timer. Running expensive Range operations on every mousemove
-  // would also stall the page.
 }
 
 function onSelectionChange() {
@@ -416,6 +457,7 @@ function onSelectionChange() {
   lastText = text;
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
+    showSkeleton();
     requestTranslation(text);
   }, DEBOUNCE_MS);
 }
