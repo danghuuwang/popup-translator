@@ -4,11 +4,11 @@
   left: 0;
   z-index: 2147483647;
   max-width: 320px;
-  padding: 12px 14px;
+  padding: 9px 11px;
   background: #ffffff;
   color: #111;
   font: 13px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
-  border-radius: 12px;
+  border-radius: 10px;
   box-shadow:
     0 4px 16px rgba(0, 0, 0, 0.08),
     0 12px 32px rgba(0, 0, 0, 0.12);
@@ -19,11 +19,11 @@
   will-change: transform, opacity;
   word-wrap: break-word;
   white-space: pre-wrap;
-  min-width: 140px;
-  min-height: 40px;
+  min-width: 120px;
+  min-height: 36px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
 }
 
 .pt-popup.pt-popup--visible {
@@ -34,14 +34,15 @@
   display: inline-flex;
   align-items: center;
   align-self: flex-start;
-  max-width: 100%;
-  padding: 4px 9px;
+  min-width: 44px;
+  height: 14px;
+  padding: 0 7px;
   font-size: 10px;
   font-weight: 500;
   line-height: 1;
   color: #555;
   background: rgba(0, 0, 0, 0.05);
-  border-radius: 5px;
+  border-radius: 4px;
   opacity: 0;
   transition: opacity 140ms ease;
   overflow: hidden;
@@ -51,6 +52,30 @@
 
 .pt-popup__provider.pt-popup__provider--ready {
   opacity: 1;
+}
+
+.pt-popup__provider--skeleton {
+  width: 50px;
+  padding: 0;
+  background: linear-gradient(
+    90deg,
+    rgba(0, 0, 0, 0.07) 0%,
+    rgba(0, 0, 0, 0.16) 50%,
+    rgba(0, 0, 0, 0.07) 100%
+  );
+  background-size: 200% 100%;
+  animation: pt-skeleton 1.2s ease-in-out infinite;
+  color: transparent;
+}
+
+.pt-popup.pt-popup--dark .pt-popup__provider--skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.07) 0%,
+    rgba(255, 255, 255, 0.18) 50%,
+    rgba(255, 255, 255, 0.07) 100%
+  );
+  background-size: 200% 100%;
 }
 
 .pt-popup__trans {

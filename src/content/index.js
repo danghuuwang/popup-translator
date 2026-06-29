@@ -313,7 +313,10 @@ function showSkeleton(sourceText) {
   const el = getPopup();
   const provider = el.querySelector(".pt-popup__provider");
   const trans = el.querySelector(".pt-popup__trans");
+  // Provider chip is in skeleton state: a small animated bar
+  // (50px wide) instead of a label.
   provider.classList.remove("pt-popup__provider--ready");
+  provider.classList.add("pt-popup__provider--skeleton");
   provider.textContent = "";
   setSkeleton(trans, sourceText);
   // Force layout to measure the skeleton before positioning.
@@ -342,6 +345,7 @@ function renderPayload(payload) {
   }
 
   // Update provider chip.
+  provider.classList.remove("pt-popup__provider--skeleton");
   provider.classList.remove("pt-popup__provider--ready");
   provider.textContent = payload && payload.provider ? payload.provider : "";
 
