@@ -155,6 +155,11 @@ async function requestTranslation(text, clientX, clientY) {
 function onMouseMove(e) {
   if (!settings.hoverEnabled) return;
 
+  // Always reposition the popup so it tracks the cursor smoothly,
+  // even while waiting for a new translation. This is the behavior
+  // the reference extension ships: the tooltip follows the mouse.
+  positionPopup(e.clientX, e.clientY);
+
   const target = e.target;
   if (!target) return;
 
