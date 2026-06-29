@@ -2,9 +2,9 @@
  * Content script — hover any text to translate.
  * Listens for mousemove (captured at window level for reliability),
  * debounces 300ms, sends a translate request to the background
- * service worker, and renders a styled popup near the cursor. Avoids
- * duplicate popups, escapes viewport edges, and reacts to live
- * setting changes from chrome.storage.
+ * service worker, and renders a styled popup near the cursor. The
+ * popup shows only the translated text plus a small provider tag
+ * beneath; no source text and no intermediate loading state.
  */
 
 import "./popup.css";
@@ -44,13 +44,8 @@ function getPopup() {
   root.setAttribute("role", "tooltip");
   root.setAttribute("aria-hidden", "true");
 
-  const src = document.createElement("div");
-  src.className = "pt-popup__src";
-  root.appendChild(src);
-
   const trans = document.createElement("div");
   trans.className = "pt-popup__trans";
-  trans.textContent = "";
   root.appendChild(trans);
 
   const provider = document.createElement("span");
@@ -113,26 +108,11 @@ function positionPopup(clientX, clientY) {
   el.style.top = `${y}px`;
 }
 
-function renderLoading(text) {
+function renderPayload(payload) {
   const el = getPopup();
-  const src = el.querySelector(".pt-popup__src");
   const trans = el.querySelector(".pt-popup__trans");
   const provider = el.querySelector(".pt-popup__provider");
 
-  src.textContent = text;
-  trans.classList.remove("pt-popup__error");
-  trans.textContent = "Translating...";
-  provider.style.display = "none";
-  showPopup();
-}
-
-function renderPayload(payload, text) {
-  const el = getPopup();
-  const src = el.querySelector(".pt-popup__src");
-  const trans = el.querySelector(".pt-popup__trans");
-  const provider = el.querySelector(".pt-popup__provider");
-
-  src.textContent = text;
   trans.classList.remove("pt-popup__error");
 
   if (payload && payload.translatedText) {
@@ -154,8 +134,7 @@ function scheduleHide() {
 
 async function requestTranslation(text, clientX, clientY) {
   const callId = ++inFlight;
-  positionPopup(clientX, clientY);
-  renderLoading(text);
+  hidePopup();
   try {
     const res = await chrome.runtime.sendMessage({
       type: "translate",
@@ -165,11 +144,11 @@ async function requestTranslation(text, clientX, clientY) {
     });
     if (callId !== inFlight) return; // a newer request superseded this one
     positionPopup(clientX, clientY);
-    renderPayload(res || {}, text);
+    renderPayload(res || {});
   } catch (err) {
     if (callId !== inFlight) return;
     positionPopup(clientX, clientY);
-    renderPayload({ error: err?.message || String(err) }, text);
+    renderPayload({ error: err?.message || String(err) });
   }
 }
 
@@ -184,10 +163,7 @@ function onMouseMove(e) {
     scheduleHide();
     return;
   }
-  if (text === lastText && target === currentNode) {
-    positionPopup(e.clientX, e.clientY);
-    return;
-  }
+  if (text === lastText && target === currentNode) return;
   lastText = text;
   currentNode = target;
 

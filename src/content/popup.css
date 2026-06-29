@@ -22,12 +22,6 @@
   opacity: 1;
 }
 
-.pt-popup__src {
-  color: #666;
-  font-size: 11px;
-  margin-bottom: 4px;
-}
-
 .pt-popup__trans {
   color: #000;
   font-weight: 500;
@@ -48,10 +42,6 @@
   color: #fafafa;
   border-color: rgba(255, 255, 255, 0.16);
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.4);
-}
-
-.pt-popup--dark .pt-popup__src {
-  color: #999;
 }
 
 .pt-popup--dark .pt-popup__trans {

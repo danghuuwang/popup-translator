@@ -1,18 +1,15 @@
 /**
  * Background service worker.
- * Routes incoming messages from the content script to the multi-provider
- * translation pipeline. The race strategy resolves with the first
- * successful response; slow providers are dropped via per-request timeout.
+ * Routes incoming messages from the content script to the Google
+ * Translate provider. Bing and Papago were removed: Bing's
+ * ttranslatev3 endpoint stopped returning results in the user's
+ * environment, and Papago's public n2mt endpoint returns 404.
  */
 
 import { googleTranslate } from "./translators/google.js";
-import { bingTranslate } from "./translators/bing.js";
-import { papagoTranslate } from "./translators/papago.js";
 
 const PROVIDERS = [
   { name: "google", fn: googleTranslate, timeout: 3000 },
-  { name: "bing", fn: bingTranslate, timeout: 3000 },
-  { name: "papago", fn: papagoTranslate, timeout: 3000 },
 ];
 
 function withTimeout(promise, ms, label) {
