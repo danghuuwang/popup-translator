@@ -8,6 +8,19 @@
 
 ---
 
+## 0. Language Convention
+
+All source code (`.js`, `.css`, `.html`), code comments, commit messages, and documentation (`README.md`, `PLAN.md` body) are written in **English only**. No Vietnamese in code/commits/docs. This applies to:
+
+- Variable/function/file names
+- JSDoc and inline comments
+- README sections, PLAN sections (after this notice)
+- `package.json` `description` field
+
+User-facing strings rendered in the popup UI may remain in the target translation language (e.g. Vietnamese label "Dịch sang") since they are product content, not code.
+
+---
+
 ## 1. Mục tiêu & Phạm vi
 
 ### Giữ
