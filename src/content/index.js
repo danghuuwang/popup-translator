@@ -260,26 +260,45 @@ function collectTextNodes(root) {
 }
 
 /** Split text on sentence terminators and remember each segment's
- *  [start, end) character offsets in the original string. */
+ *  [start, end) character offsets in the original string. The
+ *  terminator is kept inside the segment so it survives into the
+ *  translation request (we want to send "Hello." not "Hello"). */
 function splitSentencesWithOffsets(text) {
   const segments = [];
-  // Regex matches either a sentence terminator followed by
-  // whitespace, or a run of whitespace / newlines. We walk
-  // matches and build segments in between.
-  const re = /[.!?]+["')\]]*\s+|\n+/g;
+  // We split AFTER a terminator only when it is followed by
+  // whitespace, a newline, or end-of-string. The terminator
+  // itself stays in the previous segment.
+  //   - Lookbehind:  one or more terminators + optional closing
+  //     punctuation (".", "!?", "!??"), but not in the middle of
+  //     an abbreviation like "e.g." or "U.S.A." (handled by
+  //     requiring whitespace or end-of-string on the right).
+  //   - Lookahead:   whitespace, newline, or end-of-string.
+  const re = /[.!?]+["')\]]*(?=\s|\n|$)/g;
   let last = 0;
   let m;
   while ((m = re.exec(text)) !== null) {
-    const seg = text.slice(last, m.index + m[0].search(/\S|$/));
+    // Include the terminator in the segment by extending to the
+    // end of the match (re.lastIndex already points past it).
+    const endOfTerminator = m.index + m[0].length;
+    const seg = text.slice(last, endOfTerminator);
     const trimmed = seg.replace(/\s+/g, " ").trim();
     if (trimmed) {
-      // Compute offset of the trimmed start in the original text.
       const leadingWs = seg.match(/^\s*/)[0].length;
-      const start = last + leadingWs;
-      const end = m.index + m[0].length;
-      segments.push({ text: trimmed, start, end });
+      segments.push({
+        text: trimmed,
+        start: last + leadingWs,
+        end: endOfTerminator,
+      });
     }
-    last = m.index + m[0].length;
+    // Skip any whitespace / newlines that follow the terminator
+    // so the next segment starts on the first real character.
+    while (
+      re.lastIndex < text.length &&
+      /\s/.test(text[re.lastIndex])
+    ) {
+      re.lastIndex++;
+    }
+    last = re.lastIndex;
   }
   if (last < text.length) {
     const seg = text.slice(last);
