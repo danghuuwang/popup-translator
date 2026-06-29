@@ -264,7 +264,13 @@ function skeletonLineClasses(sourceText) {
 }
 
 function setSkeleton(contentEl, sourceText) {
+  // Strip any leftover classes from the previous render so the
+  // element is a clean .pt-popup__trans container again.
   contentEl.className = "pt-popup__trans";
+  // Show it immediately; the skeleton lines are real DOM spans
+  // with their own animated background, so they read as content
+  // even before any text arrives.
+  contentEl.classList.add("pt-popup__trans--ready");
   contentEl.textContent = "";
   const widths = skeletonLineClasses(sourceText);
   for (const w of widths) {
@@ -326,7 +332,7 @@ function renderPayload(payload) {
 
   // Reset trans to a clean text container.
   while (trans.firstChild) trans.removeChild(trans.firstChild);
-  trans.classList.remove("pt-popup__line", "pt-popup__line--short", "pt-popup__line--medium", "pt-popup__line--long");
+  trans.className = "pt-popup__trans";
 
   if (payload && payload.translatedText) {
     trans.textContent = payload.translatedText;
