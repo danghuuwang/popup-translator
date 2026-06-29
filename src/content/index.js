@@ -138,13 +138,65 @@ function extractTextAt(x, y) {
   const text = node.nodeValue;
   if (!text) return "";
 
-  // r.startOffset is the exact character index of the caret within
-  // the text node. We split the node value on sentence terminators,
-  // walk the resulting segments, and return the one whose [start,
-  // end] range contains r.startOffset. This is precise and
-  // independent of the cursor's X — the caret offset is the
-  // authoritative position.
-  const caret = Math.max(0, Math.min(text.length, r.startOffset));
+  // Walk up to the nearest block-level container so we can stitch
+  // together all the text nodes that belong to the same logical
+  // paragraph. A single <p> can contain inline elements like
+  // <strong> that split the text into multiple text nodes; if we
+  // only look at the node under the cursor, we'd only translate
+  // the part inside the <strong> and miss the trailing clause
+  // (", phan con lai") that lives in the next text node.
+  const block = closestBlock(node);
+  if (!block) {
+    return pickSentenceFromNode(node, r.startOffset);
+  }
+
+  // Enumerate descendant text nodes in DOM order and build a
+  // stitched string. Track the cumulative offset of each text
+  // node so we can map r.startOffset (which is local to node)
+  // into the stitched string.
+  const textNodes = collectTextNodes(block);
+  if (textNodes.length === 0) return "";
+
+  let stitched = "";
+  const nodeRanges = []; // [{node, start, end}]
+  for (const tn of textNodes) {
+    const start = stitched.length;
+    stitched += tn.nodeValue;
+    nodeRanges.push({ node: tn, start, end: stitched.length });
+  }
+
+  // Find the range that contains our text node, then compute the
+  // caret's offset in the stitched string.
+  let caretInStitched = -1;
+  for (const nr of nodeRanges) {
+    if (nr.node === node) {
+      caretInStitched = nr.start + r.startOffset;
+      break;
+    }
+  }
+  if (caretInStitched < 0) {
+    // Fallback: the text node wasn't in our enumeration (rare);
+    // just use the local caret.
+    caretInStitched = r.startOffset;
+  }
+
+  const segments = splitSentencesWithOffsets(stitched);
+  for (const seg of segments) {
+    if (caretInStitched >= seg.start && caretInStitched <= seg.end) {
+      const out = seg.text;
+      if (out.length < MIN_TEXT_LEN) return "";
+      return out.length > MAX_TEXT_LEN ? out.slice(0, MAX_TEXT_LEN) : out;
+    }
+  }
+  return "";
+}
+
+/** Pick a sentence from a single text node using the local caret
+ *  offset. Used when we cannot find a sensible block ancestor. */
+function pickSentenceFromNode(node, offset) {
+  const text = node.nodeValue || "";
+  if (!text) return "";
+  const caret = Math.max(0, Math.min(text.length, offset));
   const segments = splitSentencesWithOffsets(text);
   for (const seg of segments) {
     if (caret >= seg.start && caret <= seg.end) {
@@ -153,8 +205,58 @@ function extractTextAt(x, y) {
       return out.length > MAX_TEXT_LEN ? out.slice(0, MAX_TEXT_LEN) : out;
     }
   }
-  // Fallback if the offset falls in a gap between segments.
   return "";
+}
+
+/** Walk up from a node to the nearest block-level ancestor. We
+ *  treat <p>, <div>, <li>, <blockquote>, <h1>-<h6>, and elements
+ *  with display:block as blocks. Falls back to the immediate
+ *  parent if nothing matches. */
+function closestBlock(node) {
+  let cur = node;
+  // First skip past the text node itself.
+  if (cur.nodeType === Node.TEXT_NODE) cur = cur.parentElement;
+  if (!cur) return null;
+  const BLOCK_TAGS = new Set([
+    "P", "DIV", "LI", "BLOCKQUOTE", "PRE",
+    "H1", "H2", "H3", "H4", "H5", "H6",
+    "ARTICLE", "SECTION", "MAIN", "HEADER", "FOOTER", "TD", "TH",
+  ]);
+  let probe = cur;
+  // Look up the tree for a known block tag.
+  while (probe && probe !== document.body) {
+    if (BLOCK_TAGS.has(probe.tagName)) return probe;
+    probe = probe.parentElement;
+  }
+  // Fallback: use the element's bounding rect as a heuristic.
+  // If the element is wider than 200px and contains at least one
+  // text node, treat it as a block.
+  if (cur && cur !== document.body) {
+    const rect = cur.getBoundingClientRect();
+    if (rect.width > 200) return cur;
+  }
+  return cur;
+}
+
+/** Collect descendant text nodes in DOM order. */
+function collectTextNodes(root) {
+  const out = [];
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(n) {
+      // Skip text inside our own popup elements.
+      if (n.parentElement && n.parentElement.closest("#" + POPUP_ID)) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let n;
+  while ((n = walker.nextNode())) {
+    if (n.nodeValue && n.nodeValue.trim().length > 0) {
+      out.push(n);
+    }
+  }
+  return out;
 }
 
 /** Split text on sentence terminators and remember each segment's
