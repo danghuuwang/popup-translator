@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Popup Translator Settings</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="pt-settings">
+      <header class="pt-settings__header">
+        <h1>Popup Translator</h1>
+        <p class="pt-settings__hint">Translate any text on hover.</p>
+      </header>
+
+      <section class="pt-settings__row">
+        <label for="pt-sl">Translate From</label>
+        <select id="pt-sl"></select>
+      </section>
+
+      <section class="pt-settings__row">
+        <label for="pt-tl">Translate Into</label>
+        <select id="pt-tl"></select>
+      </section>
+
+      <section class="pt-settings__row pt-settings__row--toggle">
+        <label for="pt-hover">Enable hover translation</label>
+        <input type="checkbox" id="pt-hover" />
+      </section>
+
+      <section class="pt-settings__row pt-settings__row--toggle">
+        <label for="pt-theme">Dark popup</label>
+        <input type="checkbox" id="pt-theme" />
+      </section>
+
+      <footer class="pt-settings__footer">
+        <span id="pt-status" class="pt-settings__status">Saved</span>
+      </footer>
+    </div>
+    <script src="popup.js"></script>
+  </body>
+</html>
