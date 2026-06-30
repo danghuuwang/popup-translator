@@ -757,13 +757,18 @@ function onMouseMove(e) {
   positionPopup(lastX, lastY);
 }
 
-/** Last text that the user actively selected (via mouseup or
- *  dblclick). We use it to detect deselect: if selectionchange
- *  fires and the selection is empty/collapsed, we hide the popup. */
+/** Source of the last selection update. The popup should only
+ *  be hidden on deselect when the previous selection was made
+ *  via the selection-translate flow (mouseup). A dblclick sets
+ *  this to 'dblclick' and the selectionchange handler then
+ *  leaves the popup alone, so the dictionary view does not
+ *  flicker out the moment the browser adjusts the selection. */
+let lastSelectedSource = "";
 let lastSelectedText = "";
 
 function onSelectionChange() {
   if (!settings.selectionEnabled) return;
+  if (lastSelectedSource !== "mouseup") return;
   // selectionchange fires for many reasons: user drag, page
   // script moving the selection, focus shift. We use it only
   // to hide the popup on deselect. Translation is triggered
@@ -772,6 +777,7 @@ function onSelectionChange() {
     (window.getSelection && window.getSelection().toString().trim()) || "";
   if (!sel && lastSelectedText) {
     lastSelectedText = "";
+    lastSelectedSource = "";
     hidePopup();
   }
 }
@@ -819,6 +825,11 @@ function onDoubleClick(e) {
   const sel =
     (window.getSelection && window.getSelection().toString().trim()) || "";
   if (sel) {
+    // Tag the selection as 'dblclick' so the selectionchange
+    // handler does not hide the dictionary popup when the
+    // browser adjusts the selection right after the dblclick.
+    lastSelectedText = sel;
+    lastSelectedSource = "dblclick";
     // Make sure the hover flow doesn't immediately overwrite the
     // dictionary view: cancel any pending hover translation.
     if (hoverTimer) {
@@ -871,6 +882,7 @@ function onMouseUp(e) {
   }
   if (sel === lastSelectedText) return;
   lastSelectedText = sel;
+  lastSelectedSource = "mouseup";
   if (sel.length < MIN_TEXT_LEN || sel.length > MAX_TEXT_LEN) return;
 
   // When the user double-clicks a single word, the browser also
