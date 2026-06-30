@@ -876,6 +876,9 @@ function onDoubleClick(e) {
   if (r && r.startContainer.nodeType === Node.TEXT_NODE) {
     const word = (r.startContainer.nodeValue || "").trim();
     if (word) {
+      lastSelectedText = word;
+      lastSelectedSource = "dblclick";
+      pinnedText = word;
       if (hoverTimer) {
         clearTimeout(hoverTimer);
         hoverTimer = null;
@@ -911,8 +914,20 @@ function onMouseUp(e) {
   }
   if (sel === lastSelectedText) return;
   lastSelectedText = sel;
-  lastSelectedSource = "mouseup";
   if (sel.length < MIN_TEXT_LEN || sel.length > MAX_TEXT_LEN) return;
+
+  // A double-click is a pair of clicks: mouseup fires for the
+  // second click BEFORE the dblclick event. If the selection is
+  // a single word and dblclick is enabled, defer to the dblclick
+  // flow by NOT marking this as a 'mouseup' selection (which
+  // would let selectionchange hide the dictionary popup when
+  // the browser clears the click selection a moment later).
+  if (settings.dblclickEnabled && isSingleWord(sel)) {
+    lastSelectedSource = "";
+    return;
+  }
+
+  lastSelectedSource = "mouseup";
 
   // When the user double-clicks a single word, the browser also
   // fires a mouseup for the second click of the pair. We don't
