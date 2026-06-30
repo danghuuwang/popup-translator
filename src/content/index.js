@@ -163,6 +163,13 @@ function showPopup() {
 function hidePopup() {
   const el = document.getElementById(POPUP_ID);
   if (!el) return;
+  if (typeof __ptDebug !== "undefined" && __ptDebug) {
+    try {
+      throw new Error("hidePopup trace");
+    } catch (e) {
+      console.log("[PT] hidePopup called from:", e.stack);
+    }
+  }
   el.classList.remove("pt-popup--visible");
   el.setAttribute("aria-hidden", "true");
 }
