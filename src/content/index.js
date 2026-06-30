@@ -413,36 +413,6 @@ function splitSentencesWithOffsets(text) {
   return segments;
 }
 
-/** Build skeleton lines sized to roughly match the expected
- *  translation. Returns an array of width classes. */
-function skeletonLineClasses(sourceText) {
-  const len = (sourceText || "").length;
-  let n;
-  if (len < 30) n = 1;
-  else if (len < 80) n = 2;
-  else if (len < 160) n = 3;
-  else n = 4;
-  const widths = ["long", "medium", "long", "medium"];
-  return widths.slice(0, n);
-}
-
-function setSkeleton(contentEl, sourceText) {
-  // Strip any leftover classes from the previous render so the
-  // element is a clean .pt-popup__trans container again.
-  contentEl.className = "pt-popup__trans";
-  // Show it immediately; the skeleton lines are real DOM spans
-  // with their own animated background, so they read as content
-  // even before any text arrives.
-  contentEl.classList.add("pt-popup__trans--ready");
-  contentEl.textContent = "";
-  const widths = skeletonLineClasses(sourceText);
-  for (const w of widths) {
-    const line = document.createElement("span");
-    line.className = "pt-popup__line pt-popup__line--" + w;
-    contentEl.appendChild(line);
-  }
-}
-
 function positionPopup(x, y) {
   pendingPos = { x, y };
   if (rafId) return;
@@ -470,25 +440,6 @@ function applyPendingPos() {
   if (py < POPUP_GUTTER) py = POPUP_GUTTER;
 
   el.style.transform = `translate3d(${px}px, ${py}px, 0)`;
-}
-
-function showSkeleton(sourceText) {
-  const el = getPopup();
-  const provider = el.querySelector(".pt-popup__provider");
-  const trans = el.querySelector(".pt-popup__trans");
-  // Provider chip is in skeleton state: a small animated bar
-  // (50px wide) instead of a label.
-  provider.classList.remove("pt-popup__provider--ready");
-  provider.classList.add("pt-popup__provider--skeleton");
-  provider.textContent = "";
-  setSkeleton(trans, sourceText);
-  // Force layout to measure the skeleton before positioning.
-  void el.offsetHeight;
-  readSizes();
-  showPopup();
-  if (!pendingPos) pendingPos = { x: lastX, y: lastY };
-  cancelAnimationFrame(rafId);
-  rafId = requestAnimationFrame(applyPendingPos);
 }
 
 function renderPayload(payload) {
@@ -648,23 +599,20 @@ function onCursorSample() {
   inFlight++;
 
   if (hoverTimer) clearTimeout(hoverTimer);
-  // Snapshot the inFlight counter so the deferred callbacks can
+  // Snapshot the inFlight counter so the deferred callback can
   // detect that a newer hover has superseded this one. inFlight
   // was already bumped above to invalidate any earlier request.
   const callId = inFlight;
   hoverTimer = setTimeout(() => {
     if (callId !== inFlight) return;
     if (debounceTimer) clearTimeout(debounceTimer);
-
-    // Cache hit: skip the skeleton and the debounce, render
-    // immediately. The hover delay has already served its UX
-    // purpose of confirming the user's intent.
-    if (cacheGet(text, settings.sl, settings.tl)) {
-      requestTranslation(text);
-      return;
-    }
-
-    showSkeleton(text);
+    // No skeleton: the popup is shown only when there is real
+    // content to display (a translated string from the API, or
+    // a cached entry). The 500ms hover delay is enough of a
+    // "this is what I'm reading" signal on its own; a flashing
+    // skeleton would just be noise during the brief request
+    // window, and it makes the target-language skip path look
+    // broken (skeleton appears, then vanishes).
     debounceTimer = setTimeout(() => {
       if (callId !== inFlight) return;
       requestTranslation(text);
