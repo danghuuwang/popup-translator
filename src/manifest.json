@@ -1,12 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Popup Translator",
-  "version": "1.5.4",
+  "version": "1.6.0",
   "description": "Translate any text on hover directly on the web page.",
-  "action": {
-    "default_popup": "popup.html",
-    "default_title": "Popup Translator"
-  },
   "background": {
     "service_worker": "background.js"
   },
@@ -19,6 +15,10 @@
       "run_at": "document_idle"
     }
   ],
+  "options_ui": {
+    "page": "popup.html",
+    "open_in_tab": true
+  },
   "permissions": ["storage"],
   "host_permissions": [
     "https://translate.googleapis.com/*",
