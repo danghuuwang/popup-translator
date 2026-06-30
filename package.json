@@ -1,6 +1,6 @@
 {
   "name": "popup-translator",
-  "version": "1.4.9",
+  "version": "1.5.0",
   "description": "Chrome extension that translates any text on hover using a multi-provider race.",
   "author": "danghuuwang",
   "contributors": ["glm-5.2"],

@@ -71,6 +71,17 @@ let rafId = 0;
  *  at the click position; cleared by hidePopup or the
  *  translate view (which does follow the cursor). */
 let staticPosition = false;
+/** Range that the dictionary popup is anchored to. Recomputed
+ *  on scroll via getBoundingClientRect() so the popup follows
+ *  the selected word as the page scrolls. Cleared when the
+ *  popup is hidden. */
+let dictAnchor = null;
+/** Range that the translate popup is anchored to. The Range
+ *  is the expanded sentence that was sent to the translator.
+ *  On scroll we re-anchor the popup to its current position
+ *  so it does not drift away from the text the user is
+ *  reading. */
+let translateAnchor = null;
 let popupW = 320;
 let popupH = 60;
 
@@ -171,6 +182,8 @@ function hidePopup() {
   el.classList.remove("pt-popup--visible");
   el.setAttribute("aria-hidden", "true");
   staticPosition = false;
+  dictAnchor = null;
+  translateAnchor = null;
 }
 
 function applyTheme() {
@@ -336,7 +349,12 @@ function renderPayload(payload) {
   if (!pendingPos) pendingPos = { x: lastX, y: lastY };
   cancelAnimationFrame(rafId);
   rafId = requestAnimationFrame(applyPendingPos);
+  // Translate popups follow the cursor and are re-anchored on
+  // scroll using the cursor's current viewport position; we
+  // don't need a stored Range for this case.
   staticPosition = false;
+  translateAnchor = null;
+  dictAnchor = null;
 }
 
 /** Render a dictionary entry. The trans element gets a
@@ -360,7 +378,11 @@ function renderDictionary(payload) {
     trans.textContent = (payload && payload.error) || "No definition found";
     trans.classList.add("pt-popup__error");
   } else {
-    // Head word + phonetic on the same row.
+    // Head word + phonetic on the first row, Vietnamese
+    // translation of the headword on its own line below. The VI
+    // line is filled in later by fetchViTranslation(); we set up
+    // a loading placeholder here so the layout is stable while
+    // the second network call is in flight.
     const head = document.createElement("div");
     head.className = "pt-popup__head";
     const wordEl = document.createElement("span");
@@ -373,6 +395,16 @@ function renderDictionary(payload) {
       ph.textContent = payload.phonetic;
       head.appendChild(ph);
     }
+    const viEl = document.createElement("span");
+    viEl.className = "pt-popup__vi pt-popup__vi--loading";
+    viEl.dataset.role = "dict-vi";
+    if (payload.vi) {
+      viEl.textContent = payload.vi;
+      viEl.classList.remove("pt-popup__vi--loading");
+    } else {
+      viEl.textContent = "Đang dịch…";
+    }
+    head.appendChild(viEl);
     trans.appendChild(head);
 
     // Definition groups.
@@ -430,10 +462,33 @@ function renderDictionary(payload) {
   staticPosition = true;
 }
 
+/** Patch the Vietnamese translation into an already-rendered
+ *  dictionary popup. The placeholder element was created with
+ *  data-role="dict-vi" inside the head row; we look it up and
+ *  replace the "Đang dịch…" text with the real translation.
+ *  If the popup is no longer showing a dict, or the element is
+ *  gone, this is a no-op (the user has moved on). */
+function updateDictionaryVi(vi) {
+  const el = getPopup();
+  const viEl = el.querySelector('[data-role="dict-vi"]');
+  if (!viEl) return;
+  if (!vi) {
+    viEl.remove();
+    return;
+  }
+  viEl.textContent = vi;
+  viEl.classList.remove("pt-popup__vi--loading");
+}
+
 /** Look up an English word in the Free Dictionary API. Skipped
  *  entirely if the word is not ASCII (Vietnamese etc.) since
  *  the API is English-only. Trailing/leading punctuation is
- *  stripped so 'end.' still looks up 'end'. */
+ *  stripped so 'end.' still looks up 'end'. After the dict
+ *  result is in, we also kick off a Vietnamese translation of
+ *  the headword via the existing Google translator and patch
+ *  it into the popup when it resolves. The two calls run in
+ *  parallel; the user sees English definitions immediately and
+ *  the VI translation appears a moment later. */
 async function requestLookup(word) {
   const callId = ++inFlight;
   const clean = (word || "").trim().toLowerCase();
@@ -465,9 +520,53 @@ async function requestLookup(word) {
       cachePut("\u0001DICT\u0001" + lookupWord, "dict", "vi", res);
     }
     renderDictionary(res || {});
+
+    // Fire the VI translation in the background. We do not
+    // await it; the user already has the English defs on
+    // screen. When the call resolves we patch the placeholder.
+    if (res && res.word) {
+      fetchDictVi(res.word, callId);
+    }
   } catch (err) {
     if (callId !== inFlight) return;
     renderDictionary({ error: err?.message || String(err) });
+  }
+}
+
+/** Fetch the Vietnamese translation of a dictionary headword
+ *  and patch it into the open popup. Cached in the LRU under
+ *  the same key as the dict entry so a second double-click
+ *  renders the VI line immediately. */
+async function fetchDictVi(word, callId) {
+  const cacheKey = "\u0001DICT\u0001" + word.toLowerCase();
+  const cached = cacheGet(cacheKey, "dict", "vi");
+  if (cached && cached.vi) {
+    if (callId !== inFlight) return;
+    updateDictionaryVi(cached.vi);
+    return;
+  }
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: "translate",
+      text: word,
+      sl: "en",
+      tl: "vi",
+    });
+    if (callId !== inFlight) return;
+    if (res && res.translatedText) {
+      // Backfill the cache entry so the next double-click
+      // renders the VI line from the dict cache, not from a
+      // re-fetch.
+      const entry = cacheGet(cacheKey, "dict", "vi");
+      if (entry) {
+        entry.vi = res.translatedText;
+        cachePut(cacheKey, "dict", "vi", entry);
+      }
+      updateDictionaryVi(res.translatedText);
+    }
+  } catch (e) {
+    // Network or extension error: leave the placeholder, the
+    // user can still read the English defs.
   }
 }
 
@@ -707,11 +806,25 @@ function onMouseUp(e) {
   lastY = e.clientY;
   pinnedText = sel;
 
+  // Capture the selection's Range so the popup can follow the
+  // selected text as the page scrolls. cloneRange() detaches
+  // the range from the live Selection, which is fine — we
+  // re-read getBoundingClientRect() on every scroll.
+  let selRange = null;
+  try {
+    const live = window.getSelection();
+    if (live && live.rangeCount > 0) {
+      selRange = live.getRangeAt(0).cloneRange();
+    }
+  } catch (e) {}
+
   // Single ASCII word + dblclick enabled => dictionary lookup.
   // Multi-word selection => translation.
   if (settings.dblclickEnabled && isSingleWord(sel)) {
+    dictAnchor = selRange;
     requestLookup(sel);
   } else if (settings.selectionEnabled) {
+    translateAnchor = selRange;
     requestTranslation(sel);
   }
 }
@@ -755,5 +868,109 @@ document.addEventListener("mousedown", (e) => {
     }
   }, 0);
 });
+
+/** Re-anchor the popup on page scroll so it follows the text
+ *  it is showing. Two cases:
+ *
+ *   - Translate popup (hover): the cursor is at lastX, lastY in
+ *     viewport coordinates. After a scroll, the text under the
+ *     cursor has changed but the cursor itself is at the same
+ *     viewport position. We re-extract the text and re-render
+ *     the translation. The user wanted the popup to "follow
+ *     scroll", which we interpret as: keep translating whatever
+ *     is under the cursor as it scrolls into view.
+ *
+ *   - Dictionary popup (mouseup): anchored to a stored Range
+ *     (the selected word). We re-position the popup to the
+ *     word's current viewport rect. If the word has scrolled
+ *     off-screen, we hide the popup.
+ *
+ *  Scroll fires many times per second; we schedule a single
+ *  re-position per frame via requestAnimationFrame. */
+let scrollRafId = 0;
+function onScroll() {
+  if (scrollRafId) return;
+  scrollRafId = requestAnimationFrame(() => {
+    scrollRafId = 0;
+    const el = document.getElementById(POPUP_ID);
+    if (!el || !el.classList.contains("pt-popup--visible")) return;
+
+    if (dictAnchor) {
+      // Dictionary view: re-anchor to the selected word's
+      // current rect. If the word has scrolled fully out of
+      // the viewport, hide the popup — the user is reading
+      // something else now.
+      const rect = dictAnchor.getBoundingClientRect();
+      const vh = document.documentElement.clientHeight;
+      if (rect.bottom < 0 || rect.top > vh) {
+        hidePopup();
+        pinnedText = "";
+        return;
+      }
+      pendingPos = {
+        x: rect.left + rect.width / 2,
+        y: rect.top,
+      };
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(applyPendingPos);
+    } else if (translateAnchor) {
+      // Selection-translate: same as dict, re-anchor to the
+      // current rect of the selection. We don't have a
+      // separate anchor for hover-translate; the cursor is
+      // already in lastX, lastY and onMouseMove keeps the
+      // popup glued to it. The next onMouseMove (or another
+      // scroll) will catch up.
+      const rect = translateAnchor.getBoundingClientRect();
+      const vh = document.documentElement.clientHeight;
+      if (rect.bottom < 0 || rect.top > vh) {
+        hidePopup();
+        pinnedText = "";
+        return;
+      }
+      pendingPos = {
+        x: rect.left + rect.width / 2,
+        y: rect.top,
+      };
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(applyPendingPos);
+    } else {
+      // Hover-translate: the cursor is at lastX, lastY (a
+      // viewport position). The text under it has changed by
+      // the scroll offset. Re-run the hover flow so the popup
+      // picks up the new text and re-translates if needed.
+      // We only re-extract; we do NOT cancel a pending
+      // hoverTimer (the user is still hovering, the original
+      // timer is the source of truth for "they've paused").
+      const text = extractTextAt(lastX, lastY);
+      if (!text) {
+        hidePopup();
+        lastText = "";
+        return;
+      }
+      if (text !== lastText) {
+        // Different text under the cursor: re-render the
+        // popup for the new text. We treat this like a fresh
+        // hover hit.
+        lastText = text;
+        hidePopup();
+        inFlight++;
+        if (hoverTimer) clearTimeout(hoverTimer);
+        const callId = inFlight;
+        hoverTimer = setTimeout(() => {
+          if (callId !== inFlight) return;
+          if (pinnedText) return;
+          if (debounceTimer) clearTimeout(debounceTimer);
+          debounceTimer = setTimeout(() => {
+            if (callId !== inFlight) return;
+            if (pinnedText) return;
+            requestTranslation(text);
+          }, DEBOUNCE_MS);
+        }, HOVER_DELAY_MS);
+      }
+    }
+  });
+}
+
+window.addEventListener("scroll", onScroll, { passive: true, capture: true });
 
 loadSettings();

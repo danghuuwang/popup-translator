@@ -120,8 +120,9 @@
 
 .pt-popup__head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
+  gap: 4px 8px;
 }
 
 .pt-popup__word {
@@ -138,6 +139,35 @@
 
 .pt-popup.pt-popup--dark .pt-popup__phonetic {
   color: #aaa;
+}
+
+/* Vietnamese translation of the headword. The free dictionary
+   API is English-only, so we fetch the VI translation of the
+   headword in parallel via the existing Google translator and
+   show it here. Sits on its own line under the word+phonetic
+   row, in an accent color, to distinguish it from the English
+   definition list below. */
+.pt-popup__vi {
+  flex-basis: 100%;
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0a7d3b;
+  font-style: normal;
+}
+
+.pt-popup.pt-popup--dark .pt-popup__vi {
+  color: #4ade80;
+}
+
+.pt-popup__vi--loading {
+  color: #aaa;
+  font-weight: 400;
+  font-style: italic;
+}
+
+.pt-popup.pt-popup--dark .pt-popup__vi--loading {
+  color: #777;
 }
 
 .pt-popup__defs {
