@@ -66,10 +66,6 @@ let popupH = 60;
  *  the oldest key is the first key in iteration order. */
 const CACHE_MAX = 100;
 const translationCache = new Map();
-const TARGET_LANGS = new Set([
-  "vi", "en", "zh", "zh-cn", "zh-tw", "ja", "ko", "fr", "de", "es",
-  "ru", "pt", "it", "th", "ar", "id", "hi", "tr", "pl", "nl",
-]);
 
 function cacheGet(text, sl, tl) {
   const key = text + "\u0001" + sl + "\u0001" + tl;
@@ -89,66 +85,6 @@ function cachePut(text, sl, tl, payload) {
   while (translationCache.size > CACHE_MAX) {
     const oldest = translationCache.keys().next().value;
     translationCache.delete(oldest);
-  }
-}
-
-/** Heuristic: does the source text look like it is already in
- *  the target language? We do a lightweight per-language
- *  signature: presence of diacritics, scripts, common stop
- *  words. This is intentionally conservative: if the test is
- *  unsure, we let the API decide. The Google response's
- *  detectedSl field is the authoritative signal, but we want to
- *  skip the request entirely when it's obvious. */
-function looksLikeTarget(text, tl) {
-  if (!text) return false;
-  const lower = text.toLowerCase();
-  switch (tl) {
-    case "vi": {
-      // Vietnamese without any diacritic is not Vietnamese at
-      // all, so a single letter is enough to confirm. A short
-      // fragment like "ok" or "vn" has zero diacritics, so we
-      // fall back to the stop-word test.
-      const hasDiacritic =
-        /[ăâđêôơưĂÂĐÊÔƠƯạảấầậẹẽếềểễọỏốồộớờởỡụủứừửữỳỷỹẠẢẤẦẬẸẼẾỀỂỄỌỎỐỒỘỚỜỞỠỤỦỨỪỬỮỲỶỸ]/.test(text);
-      if (hasDiacritic) return true;
-      const stopHits = (
-        lower.match(
-          /\b(là|của|và|trong|không|có|được|những|cho|rằng|thì|mà|đã|với|từ|này|đó|khi|như|hay|để)\b/g
-        ) || []
-      ).length;
-      return stopHits >= 1;
-    }
-    case "en": {
-      // Common English stop words. We require a couple of hits
-      // to avoid false positives on short fragments.
-      const hits = (lower.match(/\b(the|is|are|was|were|be|been|have|has|do|does|will|would|can|could|should|may|might|and|or|but|of|to|in|on|at|for|with|this|that|it|as|by)\b/g) || []).length;
-      return hits >= 2;
-    }
-    case "zh":
-    case "zh-cn":
-    case "zh-tw": {
-      return /[一-鿿]/.test(text);
-    }
-    case "ja": {
-      return /[぀-ゟ゠-ヿ㐀-䶿一-鿿]/.test(text);
-    }
-    case "ko": {
-      return /[가-힯]/.test(text);
-    }
-    case "th": {
-      return /[ก-๛]/.test(text);
-    }
-    case "ar": {
-      return /[؀-ۿݐ-ݿ]/.test(text);
-    }
-    case "ru": {
-      return /[Ѐ-ӿ]/.test(text);
-    }
-    case "hi": {
-      return /[ऀ-ॿ]/.test(text);
-    }
-    default:
-      return false;
   }
 }
 
@@ -576,21 +512,6 @@ async function requestTranslation(text) {
     return;
   }
 
-  // If the source already looks like the target language, don't
-  // hit the API. We render the source as the translation (no-op)
-  // and mark the cache so repeated hovers don't re-evaluate.
-  if (looksLikeTarget(text, tl)) {
-    const noop = {
-      translatedText: text,
-      detectedSl: tl,
-      provider: "Google",
-    };
-    cachePut(text, sl, tl, noop);
-    if (callId !== inFlight) return;
-    renderPayload(noop);
-    return;
-  }
-
   try {
     const res = await chrome.runtime.sendMessage({
       type: "translate",
@@ -600,16 +521,27 @@ async function requestTranslation(text) {
     });
     if (callId !== inFlight) return;
 
-    // Server told us the source is already in the target lang.
-    // We still cache the no-op so we don't re-fetch.
-    if (res && res.detectedSl && res.detectedSl === tl && res.translatedText) {
+    // Skip path: server tells us the source is already in the
+    // target language. Mirror the behaviour of the reference
+    // extension (cflakfhockilljdbofnanaijpmpmfcol v1.1.1) which
+    // does this check on the client after the response. The
+    // detectedSl code may be short ('vi') or long ('vi-VN'), so
+    // compare both prefixes.
+    const detected = (res && res.detectedSl) || "";
+    const isTarget = detected && (detected === tl || detected.startsWith(tl + "-"));
+    if (isTarget) {
+      // Cache the no-op so a re-hover does not hit the API again.
       const noop = {
-        translatedText: res.translatedText,
-        detectedSl: tl,
-        provider: res.provider || "Google",
+        translatedText: text,
+        detectedSl: detected,
+        provider: (res && res.provider) || "Google",
+        noop: true,
       };
       cachePut(text, sl, tl, noop);
-      renderPayload(noop);
+      // For target-language hits we do not show a popup at all;
+      // the user already understands the text. Hiding feels less
+      // noisy than a popup that mirrors the source verbatim.
+      hidePopup();
       return;
     }
 
