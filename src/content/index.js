@@ -873,6 +873,16 @@ function onMouseUp(e) {
   lastSelectedText = sel;
   if (sel.length < MIN_TEXT_LEN || sel.length > MAX_TEXT_LEN) return;
 
+  // When the user double-clicks a single word, the browser also
+  // fires a mouseup for the second click of the pair. We don't
+  // want the selection view to race the dictionary view: if
+  // dblclick is enabled and the selection is a single ASCII
+  // token, defer to the dictionary flow. The user will see the
+  // popup render with definitions instead of a translation.
+  if (settings.dblclickEnabled && isSingleWord(sel)) {
+    return;
+  }
+
   // Cancel any in-flight hover translation so the selection
   // view wins.
   if (hoverTimer) {
@@ -884,6 +894,18 @@ function onMouseUp(e) {
   lastX = e.clientX;
   lastY = e.clientY;
   requestTranslation(sel);
+}
+
+/** A "single word" for the purposes of the dblclick/mouseup
+ *  arbitration: ASCII letters, hyphens, and apostrophes, with
+ *  no whitespace. The dictionary flow only handles English
+ *  words, so this check matches what the Free Dictionary
+ *  provider would accept. */
+function isSingleWord(s) {
+  if (!s) return false;
+  if (/\s/.test(s)) return false;
+  if (s.length > 40) return false;
+  return /^[a-zA-Z'-]+$/.test(s);
 }
 
 window.addEventListener("mousemove", onMouseMove, { passive: true, capture: true });
