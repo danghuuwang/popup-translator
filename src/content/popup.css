@@ -4,6 +4,7 @@
   left: 0;
   z-index: 2147483647;
   max-width: 320px;
+  max-height: 60vh;
   padding: 12px 14px;
   background: #ffffff;
   color: #111;
@@ -24,6 +25,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  overflow: hidden;
 }
 
 .pt-popup.pt-popup--visible {
@@ -62,6 +64,16 @@
   font-weight: 500;
   opacity: 0;
   transition: opacity 140ms ease;
+  /* Long translations (paragraphs, dict entries with many
+     definitions) must scroll inside the popup; otherwise the
+     popup runs off the screen. The popup itself caps at 60vh;
+     the trans element fills whatever remains. min-height: 0
+     lets the flex child shrink past its content size so the
+     scroll kicks in. */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  min-height: 0;
 }
 
 .pt-popup__trans.pt-popup__trans--ready {

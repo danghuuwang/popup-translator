@@ -66,6 +66,11 @@ let hoverTimer = null;
 let inFlight = 0;
 let pendingPos = null;
 let rafId = 0;
+/** When true, onMouseMove does not reposition the popup. Set
+ *  by the dictionary view (mouseup) so the popup stays anchored
+ *  at the click position; cleared by hidePopup or the
+ *  translate view (which does follow the cursor). */
+let staticPosition = false;
 let popupW = 320;
 let popupH = 60;
 
@@ -165,6 +170,7 @@ function hidePopup() {
   if (!el) return;
   el.classList.remove("pt-popup--visible");
   el.setAttribute("aria-hidden", "true");
+  staticPosition = false;
 }
 
 function applyTheme() {
@@ -330,6 +336,7 @@ function renderPayload(payload) {
   if (!pendingPos) pendingPos = { x: lastX, y: lastY };
   cancelAnimationFrame(rafId);
   rafId = requestAnimationFrame(applyPendingPos);
+  staticPosition = false;
 }
 
 /** Render a dictionary entry. The trans element gets a
@@ -418,6 +425,9 @@ function renderDictionary(payload) {
   if (!pendingPos) pendingPos = { x: lastX, y: lastY };
   cancelAnimationFrame(rafId);
   rafId = requestAnimationFrame(applyPendingPos);
+  // The dictionary view is pinned to the click position; the
+  // cursor is free to wander and the popup should not follow.
+  staticPosition = true;
 }
 
 /** Look up an English word in the Free Dictionary API. Skipped
@@ -608,6 +618,11 @@ function onCursorSample() {
 function onMouseMove(e) {
   lastX = e.clientX;
   lastY = e.clientY;
+  // The dictionary view is anchored to the click position, not
+  // the cursor. Skipping positionPopup while a dict is showing
+  // keeps the popup stable when the user moves the mouse off
+  // the selected word to read the definition.
+  if (staticPosition) return;
   positionPopup(lastX, lastY);
 }
 
