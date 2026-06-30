@@ -244,185 +244,33 @@ function extractTextAt(x, y) {
     }
   }
 
-  const node = r.startContainer;
-  const text = node.nodeValue;
-  if (!text) return "";
-
-  // Walk up to the nearest block-level container so we can stitch
-  // together all the text nodes that belong to the same logical
-  // paragraph. A single <p> can contain inline elements like
-  // <strong> that split the text into multiple text nodes; if we
-  // only look at the node under the cursor, we'd only translate
-  // the part inside the <strong> and miss the trailing clause
-  // (", phan con lai") that lives in the next text node.
-  const block = closestBlock(node);
-  if (!block) {
-    return pickSentenceFromNode(node, r.startOffset);
+  // Try to expand the range to the surrounding sentence. Chrome
+  // supports Range.expand("sentence") and treats the result as
+  // one logical unit. When the sentence lives inside a single
+  // text node, this gives us the right span directly. When the
+  // sentence is split across inline elements (e.g. a <p> with
+  // an <a> and a <strong>), the expansion only covers the part
+  // inside the current text node; the multi-node case is a known
+  // limitation of the native API that the reference extension
+  // (cflakfhockilljdbofnanaijpmpmfcol) accepts as well.
+  const sentenceRange = r.cloneRange();
+  try {
+    sentenceRange.expand("sentence");
+  } catch (e) {
+    // Some pages throw if the range is detached; fall through.
   }
-
-  // Enumerate descendant text nodes in DOM order and build a
-  // stitched string. Track the cumulative offset of each text
-  // node so we can map r.startOffset (which is local to node)
-  // into the stitched string.
-  const textNodes = collectTextNodes(block);
-  if (textNodes.length === 0) return "";
-
-  let stitched = "";
-  const nodeRanges = []; // [{node, start, end}]
-  for (const tn of textNodes) {
-    const start = stitched.length;
-    stitched += tn.nodeValue;
-    nodeRanges.push({ node: tn, start, end: stitched.length });
+  let text = sentenceRange.toString();
+  // Collapse runs of whitespace so a sentence that spans a line
+  // break still reads as a single sentence.
+  text = text.replace(/\s+/g, " ").trim();
+  if (text.length < MIN_TEXT_LEN) {
+    // The sentence expansion may have ended up empty or single-
+    // character; fall back to the caret's text node as-is.
+    text = (r.startContainer.nodeValue || "").trim();
+    if (text.length < MIN_TEXT_LEN) return "";
   }
-
-  // Find the range that contains our text node, then compute the
-  // caret's offset in the stitched string.
-  let caretInStitched = -1;
-  for (const nr of nodeRanges) {
-    if (nr.node === node) {
-      caretInStitched = nr.start + r.startOffset;
-      break;
-    }
-  }
-  if (caretInStitched < 0) {
-    // Fallback: the text node wasn't in our enumeration (rare);
-    // just use the local caret.
-    caretInStitched = r.startOffset;
-  }
-
-  const segments = splitSentencesWithOffsets(stitched);
-  for (const seg of segments) {
-    if (caretInStitched >= seg.start && caretInStitched <= seg.end) {
-      const out = seg.text;
-      if (out.length < MIN_TEXT_LEN) return "";
-      return out.length > MAX_TEXT_LEN ? out.slice(0, MAX_TEXT_LEN) : out;
-    }
-  }
-  return "";
-}
-
-/** Pick a sentence from a single text node using the local caret
- *  offset. Used when we cannot find a sensible block ancestor. */
-function pickSentenceFromNode(node, offset) {
-  const text = node.nodeValue || "";
-  if (!text) return "";
-  const caret = Math.max(0, Math.min(text.length, offset));
-  const segments = splitSentencesWithOffsets(text);
-  for (const seg of segments) {
-    if (caret >= seg.start && caret <= seg.end) {
-      const out = seg.text;
-      if (out.length < MIN_TEXT_LEN) return "";
-      return out.length > MAX_TEXT_LEN ? out.slice(0, MAX_TEXT_LEN) : out;
-    }
-  }
-  return "";
-}
-
-/** Walk up from a node to the nearest block-level ancestor. We
- *  treat <p>, <div>, <li>, <blockquote>, <h1>-<h6>, and elements
- *  with display:block as blocks. Falls back to the immediate
- *  parent if nothing matches. */
-function closestBlock(node) {
-  let cur = node;
-  // First skip past the text node itself.
-  if (cur.nodeType === Node.TEXT_NODE) cur = cur.parentElement;
-  if (!cur) return null;
-  const BLOCK_TAGS = new Set([
-    "P", "DIV", "LI", "BLOCKQUOTE", "PRE",
-    "H1", "H2", "H3", "H4", "H5", "H6",
-    "ARTICLE", "SECTION", "MAIN", "HEADER", "FOOTER", "TD", "TH",
-  ]);
-  let probe = cur;
-  // Look up the tree for a known block tag.
-  while (probe && probe !== document.body) {
-    if (BLOCK_TAGS.has(probe.tagName)) return probe;
-    probe = probe.parentElement;
-  }
-  // Fallback: use the element's bounding rect as a heuristic.
-  // If the element is wider than 200px and contains at least one
-  // text node, treat it as a block.
-  if (cur && cur !== document.body) {
-    const rect = cur.getBoundingClientRect();
-    if (rect.width > 200) return cur;
-  }
-  return cur;
-}
-
-/** Collect descendant text nodes in DOM order. */
-function collectTextNodes(root) {
-  const out = [];
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    acceptNode(n) {
-      // Skip text inside our own popup elements.
-      if (n.parentElement && n.parentElement.closest("#" + POPUP_ID)) {
-        return NodeFilter.FILTER_REJECT;
-      }
-      return NodeFilter.FILTER_ACCEPT;
-    },
-  });
-  let n;
-  while ((n = walker.nextNode())) {
-    if (n.nodeValue && n.nodeValue.trim().length > 0) {
-      out.push(n);
-    }
-  }
-  return out;
-}
-
-/** Split text on sentence terminators and remember each segment's
- *  [start, end) character offsets in the original string. The
- *  terminator is kept inside the segment so it survives into the
- *  translation request (we want to send "Hello." not "Hello"). */
-function splitSentencesWithOffsets(text) {
-  const segments = [];
-  // We split AFTER a terminator only when it is followed by
-  // whitespace, a newline, or end-of-string. The terminator
-  // itself stays in the previous segment.
-  //   - Lookbehind:  one or more terminators + optional closing
-  //     punctuation (".", "!?", "!??"), but not in the middle of
-  //     an abbreviation like "e.g." or "U.S.A." (handled by
-  //     requiring whitespace or end-of-string on the right).
-  //   - Lookahead:   whitespace, newline, or end-of-string.
-  const re = /[.!?]+["')\]]*(?=\s|\n|$)/g;
-  let last = 0;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    // Include the terminator in the segment by extending to the
-    // end of the match (re.lastIndex already points past it).
-    const endOfTerminator = m.index + m[0].length;
-    const seg = text.slice(last, endOfTerminator);
-    const trimmed = seg.replace(/\s+/g, " ").trim();
-    if (trimmed) {
-      const leadingWs = seg.match(/^\s*/)[0].length;
-      segments.push({
-        text: trimmed,
-        start: last + leadingWs,
-        end: endOfTerminator,
-      });
-    }
-    // Skip any whitespace / newlines that follow the terminator
-    // so the next segment starts on the first real character.
-    while (
-      re.lastIndex < text.length &&
-      /\s/.test(text[re.lastIndex])
-    ) {
-      re.lastIndex++;
-    }
-    last = re.lastIndex;
-  }
-  if (last < text.length) {
-    const seg = text.slice(last);
-    const trimmed = seg.replace(/\s+/g, " ").trim();
-    if (trimmed) {
-      const leadingWs = seg.match(/^\s*/)[0].length;
-      segments.push({
-        text: trimmed,
-        start: last + leadingWs,
-        end: text.length,
-      });
-    }
-  }
-  return segments;
+  if (text.length > MAX_TEXT_LEN) return text.slice(0, MAX_TEXT_LEN);
+  return text;
 }
 
 function positionPopup(x, y) {
