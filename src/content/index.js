@@ -534,15 +534,29 @@ async function requestTranslation(text) {
     if (callId !== inFlight) return;
 
     // Skip path: server tells us the source is already in the
-    // target language. Mirror the behaviour of the reference
-    // extension (cflakfhockilljdbofnanaijpmpmfcol v1.1.1) which
-    // does this check on the client after the response. The
-    // detectedSl code may be short ('vi') or long ('vi-VN'), so
-    // compare both prefixes.
+    // target language. We also skip when the server returned
+    // the source text verbatim as the translation: that means
+    // Google could not produce a different string, which is
+    // strong evidence the source is already in the target
+    // language. The detectedSl field is the primary signal,
+    // but it can be wrong for short fragments or domain-
+    // specific text, so the verbatim match is a useful backup.
     const detected = (res && res.detectedSl) || "";
-    const isTarget = detected && (detected === tl || detected.startsWith(tl + "-"));
+    const translated = (res && res.translatedText) || "";
+    const isTargetByLang =
+      detected && (detected === tl || detected.startsWith(tl + "-"));
+    const isTargetByText = translated && translated.trim() === text.trim();
+    const isTarget = isTargetByLang || isTargetByText;
     if (typeof __ptDebug !== "undefined" && __ptDebug) {
-      console.log("[PT] response", { text, tl, detected, isTarget, res });
+      console.log("[PT] response", {
+        text,
+        tl,
+        detected,
+        translated,
+        isTargetByLang,
+        isTargetByText,
+        isTarget,
+      });
     }
     if (isTarget) {
       // Cache the no-op so a re-hover does not hit the API again.
