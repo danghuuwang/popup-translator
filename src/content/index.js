@@ -48,6 +48,11 @@ let settings = {
   theme: "system",
 };
 
+// Set to true in this script (or via setting) to log every API
+// response. Defaults to true so the user can debug whether
+// detectedSl is being parsed correctly.
+let __ptDebug = true;
+
 let lastX = 0;
 let lastY = 0;
 let lastText = "";
@@ -508,6 +513,13 @@ async function requestTranslation(text) {
   const cached = cacheGet(text, sl, tl);
   if (cached) {
     if (callId !== inFlight) return;
+    if (cached.noop) {
+      // Previously-detected target-language hit. The popup
+      // mirrors the source verbatim, which is just noise. Hide
+      // it instead of re-rendering.
+      hidePopup();
+      return;
+    }
     renderPayload(cached);
     return;
   }
@@ -529,6 +541,9 @@ async function requestTranslation(text) {
     // compare both prefixes.
     const detected = (res && res.detectedSl) || "";
     const isTarget = detected && (detected === tl || detected.startsWith(tl + "-"));
+    if (typeof __ptDebug !== "undefined" && __ptDebug) {
+      console.log("[PT] response", { text, tl, detected, isTarget, res });
+    }
     if (isTarget) {
       // Cache the no-op so a re-hover does not hit the API again.
       const noop = {
