@@ -76,12 +76,18 @@
      lets the flex child shrink past its content size, and
      flex: 1 makes it grow to fill the popup height so the
      scroll surface is the full popup body, not just the
-     content's natural size. */
+     content's natural size.
+     pointer-events: auto re-enables mouse events on the
+     scrollable area so the user can wheel-scroll inside the
+     popup; the popup's outer element stays pointer-events:
+     none so it never blocks clicks on the page underneath. */
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
   min-height: 0;
   flex: 1 1 auto;
+  pointer-events: auto;
+  touch-action: pan-y;
 }
 
 .pt-popup__trans.pt-popup__trans--ready {
@@ -153,19 +159,19 @@
    API is English-only, so we fetch the VI translation of the
    headword in parallel via the existing Google translator and
    show it here. Sits on its own line under the word+phonetic
-   row, in an accent color, to distinguish it from the English
-   definition list below. */
+   row, in a muted secondary color, to distinguish it from the
+   English definition list below without competing with it. */
 .pt-popup__vi {
   flex-basis: 100%;
   margin-top: 2px;
   font-size: 14px;
   font-weight: 600;
-  color: #0a7d3b;
+  color: #555;
   font-style: normal;
 }
 
 .pt-popup.pt-popup--dark .pt-popup__vi {
-  color: #4ade80;
+  color: #c0c0c0;
 }
 
 .pt-popup__vi--loading {
@@ -223,17 +229,18 @@
 
 /* Vietnamese translation of a single English definition. Sits
    right under the English text in the same li, in the same
-   accent green as the headword translation, so the user can
-   pair the two. */
+   muted color as the headword translation, so the user can
+   pair the two without a second accent color competing with
+   the English text. */
 .pt-popup__defvi {
   margin-top: 2px;
   font-size: 12px;
-  color: #0a7d3b;
+  color: #555;
   line-height: 1.4;
 }
 
 .pt-popup.pt-popup--dark .pt-popup__defvi {
-  color: #4ade80;
+  color: #c0c0c0;
 }
 
 .pt-popup__defvi--loading {

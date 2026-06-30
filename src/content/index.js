@@ -71,17 +71,6 @@ let rafId = 0;
  *  at the click position; cleared by hidePopup or the
  *  translate view (which does follow the cursor). */
 let staticPosition = false;
-/** Range that the dictionary popup is anchored to. Recomputed
- *  on scroll via getBoundingClientRect() so the popup follows
- *  the selected word as the page scrolls. Cleared when the
- *  popup is hidden. */
-let dictAnchor = null;
-/** Range that the translate popup is anchored to. The Range
- *  is the expanded sentence that was sent to the translator.
- *  On scroll we re-anchor the popup to its current position
- *  so it does not drift away from the text the user is
- *  reading. */
-let translateAnchor = null;
 let popupW = 320;
 let popupH = 60;
 
@@ -182,8 +171,6 @@ function hidePopup() {
   el.classList.remove("pt-popup--visible");
   el.setAttribute("aria-hidden", "true");
   staticPosition = false;
-  dictAnchor = null;
-  translateAnchor = null;
 }
 
 function applyTheme() {
@@ -349,12 +336,9 @@ function renderPayload(payload) {
   if (!pendingPos) pendingPos = { x: lastX, y: lastY };
   cancelAnimationFrame(rafId);
   rafId = requestAnimationFrame(applyPendingPos);
-  // Translate popups follow the cursor and are re-anchored on
-  // scroll using the cursor's current viewport position; we
-  // don't need a stored Range for this case.
+  // Translate popups follow the cursor; the dict popup stays
+  // at the click position.
   staticPosition = false;
-  translateAnchor = null;
-  dictAnchor = null;
 }
 
 /** Render a dictionary entry. The trans element gets a
@@ -893,25 +877,11 @@ function onMouseUp(e) {
   lastY = e.clientY;
   pinnedText = sel;
 
-  // Capture the selection's Range so the popup can follow the
-  // selected text as the page scrolls. cloneRange() detaches
-  // the range from the live Selection, which is fine — we
-  // re-read getBoundingClientRect() on every scroll.
-  let selRange = null;
-  try {
-    const live = window.getSelection();
-    if (live && live.rangeCount > 0) {
-      selRange = live.getRangeAt(0).cloneRange();
-    }
-  } catch (e) {}
-
   // Single ASCII word + dblclick enabled => dictionary lookup.
   // Multi-word selection => translation.
   if (settings.dblclickEnabled && isSingleWord(sel)) {
-    dictAnchor = selRange;
     requestLookup(sel);
   } else if (settings.selectionEnabled) {
-    translateAnchor = selRange;
     requestTranslation(sel);
   }
 }
@@ -956,114 +926,5 @@ document.addEventListener("mousedown", (e) => {
   }, 0);
 });
 
-/** Re-anchor the popup on page scroll so it follows the text
- *  it is showing. Two cases:
- *
- *   - Translate popup (hover): the cursor is at lastX, lastY in
- *     viewport coordinates. After a scroll, the text under the
- *     cursor has changed but the cursor itself is at the same
- *     viewport position. We re-extract the text and re-render
- *     the translation. The user wanted the popup to "follow
- *     scroll", which we interpret as: keep translating whatever
- *     is under the cursor as it scrolls into view.
- *
- *   - Dictionary popup (mouseup): anchored to a stored Range
- *     (the selected word). We re-position the popup to the
- *     word's current viewport rect. If the word has scrolled
- *     off-screen, we hide the popup.
- *
- *  Scroll fires many times per second; we schedule a single
- *  re-position per frame via requestAnimationFrame. */
-let scrollRafId = 0;
-function onScroll() {
-  if (typeof __ptDebug !== "undefined" && __ptDebug) {
-    console.log("[PT] onScroll fired");
-  }
-  if (scrollRafId) return;
-  scrollRafId = requestAnimationFrame(() => {
-    scrollRafId = 0;
-    const el = document.getElementById(POPUP_ID);
-    if (!el || !el.classList.contains("pt-popup--visible")) return;
-    if (typeof __ptDebug !== "undefined" && __ptDebug) {
-      console.log("[PT] scroll: visible, dictAnchor=", !!dictAnchor, "translateAnchor=", !!translateAnchor);
-    }
-
-    if (dictAnchor) {
-      // Dictionary view: re-anchor to the selected word's
-      // current rect. If the word has scrolled fully out of
-      // the viewport, hide the popup — the user is reading
-      // something else now.
-      const rect = dictAnchor.getBoundingClientRect();
-      const vh = document.documentElement.clientHeight;
-      if (rect.bottom < 0 || rect.top > vh) {
-        hidePopup();
-        pinnedText = "";
-        return;
-      }
-      pendingPos = {
-        x: rect.left + rect.width / 2,
-        y: rect.top,
-      };
-      cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(applyPendingPos);
-    } else if (translateAnchor) {
-      // Selection-translate: same as dict, re-anchor to the
-      // current rect of the selection. We don't have a
-      // separate anchor for hover-translate; the cursor is
-      // already in lastX, lastY and onMouseMove keeps the
-      // popup glued to it. The next onMouseMove (or another
-      // scroll) will catch up.
-      const rect = translateAnchor.getBoundingClientRect();
-      const vh = document.documentElement.clientHeight;
-      if (rect.bottom < 0 || rect.top > vh) {
-        hidePopup();
-        pinnedText = "";
-        return;
-      }
-      pendingPos = {
-        x: rect.left + rect.width / 2,
-        y: rect.top,
-      };
-      cancelAnimationFrame(rafId);
-      rafId = requestAnimationFrame(applyPendingPos);
-    } else {
-      // Hover-translate: the cursor is at lastX, lastY (a
-      // viewport position). The text under it has changed by
-      // the scroll offset. Re-run the hover flow so the popup
-      // picks up the new text and re-translates if needed.
-      // We only re-extract; we do NOT cancel a pending
-      // hoverTimer (the user is still hovering, the original
-      // timer is the source of truth for "they've paused").
-      const text = extractTextAt(lastX, lastY);
-      if (!text) {
-        hidePopup();
-        lastText = "";
-        return;
-      }
-      if (text !== lastText) {
-        // Different text under the cursor: re-render the
-        // popup for the new text. We treat this like a fresh
-        // hover hit.
-        lastText = text;
-        hidePopup();
-        inFlight++;
-        if (hoverTimer) clearTimeout(hoverTimer);
-        const callId = inFlight;
-        hoverTimer = setTimeout(() => {
-          if (callId !== inFlight) return;
-          if (pinnedText) return;
-          if (debounceTimer) clearTimeout(debounceTimer);
-          debounceTimer = setTimeout(() => {
-            if (callId !== inFlight) return;
-            if (pinnedText) return;
-            requestTranslation(text);
-          }, DEBOUNCE_MS);
-        }, HOVER_DELAY_MS);
-      }
-    }
-  });
-}
-
-window.addEventListener("scroll", onScroll, { passive: true, capture: true });
 
 loadSettings();
