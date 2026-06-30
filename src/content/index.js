@@ -40,13 +40,18 @@ const POPUP_OFFSET_Y = 14;
 const POPUP_GUTTER = 8;
 const POPUP_ID = "__pt_popup_root__";
 
-/** @type {{sl: string, tl: string, hoverEnabled: boolean, theme: 'light'|'dark'|'system'}} */
+/** @type {{sl: string, hoverEnabled: boolean, dblclickEnabled: boolean, selectionEnabled: boolean, theme: 'light'|'dark'|'system'}} */
 let settings = {
   sl: "auto",
-  tl: "vi",
   hoverEnabled: true,
+  dblclickEnabled: true,
+  selectionEnabled: true,
   theme: "system",
 };
+
+// Target language is hard-coded to Vietnamese. The extension is
+// EN/auto -> VI only. There is no setting for this and no UI.
+const TARGET_LANG = "vi";
 
 // Set to true in this script (or via setting) to log every API
 // response. Defaults to true so the user can debug whether
@@ -479,10 +484,136 @@ function renderPayload(payload) {
   rafId = requestAnimationFrame(applyPendingPos);
 }
 
+/** Render a dictionary entry. The trans element gets a
+ *  'pt-popup__dict' modifier and is populated with the head
+ *  word, phonetic, and a definition list grouped by part of
+ *  speech. */
+function renderDictionary(payload) {
+  const el = getPopup();
+  const provider = el.querySelector(".pt-popup__provider");
+  const trans = el.querySelector(".pt-popup__trans");
+
+  // Reset the content container.
+  while (trans.firstChild) trans.removeChild(trans.firstChild);
+  trans.className = "pt-popup__trans pt-popup__trans--dict";
+
+  provider.classList.remove("pt-popup__provider--skeleton");
+  provider.classList.remove("pt-popup__provider--ready");
+  provider.textContent = (payload && payload.provider) || "Dictionary";
+
+  if (!payload || !payload.word) {
+    trans.textContent = (payload && payload.error) || "No definition found";
+    trans.classList.add("pt-popup__error");
+  } else {
+    // Head word + phonetic on the same row.
+    const head = document.createElement("div");
+    head.className = "pt-popup__head";
+    const wordEl = document.createElement("span");
+    wordEl.className = "pt-popup__word";
+    wordEl.textContent = payload.word;
+    head.appendChild(wordEl);
+    if (payload.phonetic) {
+      const ph = document.createElement("span");
+      ph.className = "pt-popup__phonetic";
+      ph.textContent = payload.phonetic;
+      head.appendChild(ph);
+    }
+    trans.appendChild(head);
+
+    // Definition groups.
+    const list = document.createElement("div");
+    list.className = "pt-popup__defs";
+    for (const group of payload.entries || []) {
+      if (!group.definitions || group.definitions.length === 0) continue;
+      const block = document.createElement("div");
+      block.className = "pt-popup__defgroup";
+      if (group.partOfSpeech) {
+        const pos = document.createElement("div");
+        pos.className = "pt-popup__pos";
+        pos.textContent = group.partOfSpeech;
+        block.appendChild(pos);
+      }
+      const ol = document.createElement("ol");
+      ol.className = "pt-popup__deflist";
+      for (const def of group.definitions) {
+        const li = document.createElement("li");
+        li.className = "pt-popup__defitem";
+        const text = document.createElement("span");
+        text.className = "pt-popup__deftext";
+        text.textContent = def.text;
+        li.appendChild(text);
+        if (def.example) {
+          const ex = document.createElement("div");
+          ex.className = "pt-popup__example";
+          ex.textContent = `"${def.example}"`;
+          li.appendChild(ex);
+        }
+        ol.appendChild(li);
+      }
+      block.appendChild(ol);
+      list.appendChild(block);
+    }
+    trans.appendChild(list);
+  }
+
+  // Trigger layout then fade in.
+  void el.offsetHeight;
+  requestAnimationFrame(() => {
+    trans.classList.add("pt-popup__trans--ready");
+    if (provider.textContent) {
+      provider.classList.add("pt-popup__provider--ready");
+    }
+  });
+
+  readSizes();
+  showPopup();
+  if (!pendingPos) pendingPos = { x: lastX, y: lastY };
+  cancelAnimationFrame(rafId);
+  rafId = requestAnimationFrame(applyPendingPos);
+}
+
+/** Look up an English word in the Free Dictionary API. Skipped
+ *  entirely if the word is not ASCII (Vietnamese etc.) since
+ *  the API is English-only. */
+async function requestLookup(word) {
+  const callId = ++inFlight;
+  const clean = (word || "").trim().toLowerCase();
+  if (!clean) return;
+  if (!/^[a-z'-]+$/.test(clean)) {
+    // Not an English word; do nothing. The user can still
+    // translate it by selecting it (selection flow) or by
+    // hovering the sentence (hover flow).
+    hidePopup();
+    return;
+  }
+
+  const cached = cacheGet("\u0001DICT\u0001" + clean, "dict", "vi");
+  if (cached) {
+    if (callId !== inFlight) return;
+    renderDictionary(cached);
+    return;
+  }
+
+  try {
+    const res = await chrome.runtime.sendMessage({
+      type: "lookup",
+      word: clean,
+    });
+    if (callId !== inFlight) return;
+    if (res && res.word) {
+      cachePut("\u0001DICT\u0001" + clean, "dict", "vi", res);
+    }
+    renderDictionary(res || {});
+  } catch (err) {
+    if (callId !== inFlight) return;
+    renderDictionary({ error: err?.message || String(err) });
+  }
+}
+
 async function requestTranslation(text) {
   const callId = ++inFlight;
   const sl = settings.sl;
-  const tl = settings.tl;
+  const tl = TARGET_LANG;
 
   // Cache hit: render immediately, skip the network.
   const cached = cacheGet(text, sl, tl);
@@ -626,19 +757,35 @@ function onMouseMove(e) {
   positionPopup(lastX, lastY);
 }
 
+/** Last text that the user actively selected (via mouseup or
+ *  dblclick). We use it to detect deselect: if selectionchange
+ *  fires and the selection is empty/collapsed, we hide the popup. */
+let lastSelectedText = "";
+
 function onSelectionChange() {
-  // Intentionally empty: we don't trigger translations from
-  // selectionchange. The hover flow (onCursorSample) is the
-  // single source of truth for when to translate, because
-  // selectionchange can fire when the page moves the selection
-  // (e.g. clicking outside, or a previous selection still
-  // existing) even though the user never hovered over it.
+  if (!settings.selectionEnabled) return;
+  // selectionchange fires for many reasons: user drag, page
+  // script moving the selection, focus shift. We use it only
+  // to hide the popup on deselect. Translation is triggered
+  // from mouseup, not from this event, to avoid double-firing.
+  const sel =
+    (window.getSelection && window.getSelection().toString().trim()) || "";
+  if (!sel && lastSelectedText) {
+    lastSelectedText = "";
+    hidePopup();
+  }
 }
 
 function loadSettings() {
   try {
     chrome.storage.local.get(
-      { sl: "auto", tl: "vi", hoverEnabled: true, theme: "system" },
+      {
+        sl: "auto",
+        hoverEnabled: true,
+        dblclickEnabled: true,
+        selectionEnabled: true,
+        theme: "system",
+      },
       (items) => {
         if (chrome.runtime.lastError) return;
         settings = { ...settings, ...items };
@@ -662,8 +809,90 @@ try {
   });
 } catch (e) {}
 
+function onDoubleClick(e) {
+  if (!settings.dblclickEnabled) return;
+  if (document.visibilityState !== "visible") return;
+  // Use the current selection (the browser has just selected the
+  // double-clicked word). Fall back to looking up the text node
+  // at the click position if for some reason the selection is
+  // empty.
+  const sel =
+    (window.getSelection && window.getSelection().toString().trim()) || "";
+  if (sel) {
+    // Make sure the hover flow doesn't immediately overwrite the
+    // dictionary view: cancel any pending hover translation.
+    if (hoverTimer) {
+      clearTimeout(hoverTimer);
+      hoverTimer = null;
+    }
+    inFlight++;
+    lastText = "";
+    lastX = e.clientX;
+    lastY = e.clientY;
+    requestLookup(sel);
+    return;
+  }
+  const r = document.caretRangeFromPoint && document.caretRangeFromPoint(e.clientX, e.clientY);
+  if (r && r.startContainer.nodeType === Node.TEXT_NODE) {
+    const word = (r.startContainer.nodeValue || "").trim();
+    if (word) {
+      if (hoverTimer) {
+        clearTimeout(hoverTimer);
+        hoverTimer = null;
+      }
+      inFlight++;
+      lastText = "";
+      lastX = e.clientX;
+      lastY = e.clientY;
+      requestLookup(word);
+    }
+  }
+}
+
+function onMouseUp(e) {
+  if (!settings.selectionEnabled) return;
+  if (document.visibilityState !== "visible") return;
+  // Skip if this mouseup is on our own popup (don't re-trigger
+  // when the user clicks inside the translated popup).
+  if (e.target && e.target.closest && e.target.closest("#" + POPUP_ID)) {
+    return;
+  }
+  const sel =
+    (window.getSelection && window.getSelection().toString().trim()) || "";
+  if (!sel) {
+    // Selection collapsed or empty: the user is not selecting
+    // anything. Hide the popup so it does not linger after a
+    // deselect.
+    if (lastSelectedText) {
+      lastSelectedText = "";
+      hidePopup();
+    }
+    return;
+  }
+  if (sel === lastSelectedText) return;
+  lastSelectedText = sel;
+  if (sel.length < MIN_TEXT_LEN || sel.length > MAX_TEXT_LEN) return;
+
+  // Cancel any in-flight hover translation so the selection
+  // view wins.
+  if (hoverTimer) {
+    clearTimeout(hoverTimer);
+    hoverTimer = null;
+  }
+  inFlight++;
+  lastText = "";
+  lastX = e.clientX;
+  lastY = e.clientY;
+  requestTranslation(sel);
+}
+
 window.addEventListener("mousemove", onMouseMove, { passive: true, capture: true });
 setInterval(onCursorSample, POLL_MS);
+document.addEventListener("dblclick", onDoubleClick);
+document.addEventListener("mouseup", onMouseUp);
+// selectionchange is also listened to so we can hide the popup
+// the moment the user deselects (clears the selection by clicking
+// elsewhere or pressing an arrow key).
 document.addEventListener("selectionchange", onSelectionChange);
 
 loadSettings();

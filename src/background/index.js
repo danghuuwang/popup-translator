@@ -1,15 +1,27 @@
 /**
  * Background service worker.
- * Routes incoming messages from the content script to the Google
- * Translate provider. Bing and Papago were removed: Bing's
- * ttranslatev3 endpoint stopped returning results in the user's
- * environment, and Papago's public n2mt endpoint returns 404.
+ * Routes incoming messages from the content script. Two message
+ * types are supported:
+ *
+ *   - {type: "translate", text, sl}   run Google and reply with
+ *                                      the translation. The target
+ *                                      language is hard-coded in
+ *                                      the content script to vi.
+ *
+ *   - {type: "lookup", word}          look up an English word in
+ *                                      the Free Dictionary API and
+ *                                      reply with the entries.
  */
 
 import { googleTranslate } from "./translators/google.js";
+import { dictionaryLookup } from "./translators/dictionary.js";
 
-const PROVIDERS = [
+const TRANSLATE_PROVIDERS = [
   { name: "google", fn: googleTranslate, timeout: 3000 },
+];
+
+const LOOKUP_PROVIDERS = [
+  { name: "dictionary", fn: dictionaryLookup, timeout: 4000 },
 ];
 
 function withTimeout(promise, ms, label) {
@@ -28,11 +40,11 @@ function withTimeout(promise, ms, label) {
   });
 }
 
-async function translateRace({ text, sl, tl }) {
-  const tasks = PROVIDERS.map((p) =>
-    withTimeout(p.fn({ text, sl, tl }), p.timeout, p.name).catch((err) => {
-      return { __error: err.message || String(err) };
-    })
+async function raceProviders(msg, providers) {
+  const tasks = providers.map((p) =>
+    withTimeout(p.fn(msg), p.timeout, p.name).catch((err) => ({
+      __error: err.message || String(err),
+    }))
   );
   const settled = await Promise.all(tasks);
   const success = settled.find((r) => r && !r.__error);
@@ -41,12 +53,25 @@ async function translateRace({ text, sl, tl }) {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (!msg || msg.type !== "translate") return false;
+  if (!msg) return false;
 
-  translateRace(msg)
-    .then((result) => sendResponse(result))
-    .catch((err) =>
-      sendResponse({ error: err?.message || String(err) })
-    );
-  return true; // keep channel open for async response
+  if (msg.type === "translate") {
+    raceProviders({ text: msg.text, sl: msg.sl, tl: "vi" }, TRANSLATE_PROVIDERS)
+      .then((result) => sendResponse(result))
+      .catch((err) =>
+        sendResponse({ error: err?.message || String(err) })
+      );
+    return true;
+  }
+
+  if (msg.type === "lookup") {
+    raceProviders({ word: msg.word }, LOOKUP_PROVIDERS)
+      .then((result) => sendResponse(result))
+      .catch((err) =>
+        sendResponse({ error: err?.message || String(err) })
+      );
+    return true;
+  }
+
+  return false;
 });

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Popup Translator",
-  "version": "1.3.6",
+  "version": "1.4.0",
   "description": "Translate any text on hover directly on the web page.",
   "action": {
     "default_popup": "popup.html",
@@ -21,7 +21,8 @@
   ],
   "permissions": ["storage"],
   "host_permissions": [
-    "https://translate.googleapis.com/*"
+    "https://translate.googleapis.com/*",
+    "https://api.dictionaryapi.dev/*"
   ],
   "icons": {
     "16": "icons/icon_16.png",

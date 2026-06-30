@@ -94,3 +94,90 @@
 .pt-popup.pt-popup--dark .pt-popup__error {
   color: #e57373;
 }
+
+/* Dictionary view: headword, phonetic, definitions grouped
+   by part of speech. The --dict modifier on .pt-popup__trans
+   switches the content container from a single text node to a
+   structured layout. */
+.pt-popup__trans--dict {
+  white-space: normal;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pt-popup__head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.pt-popup__word {
+  font-size: 16px;
+  font-weight: 600;
+  color: inherit;
+}
+
+.pt-popup__phonetic {
+  font-size: 12px;
+  color: #777;
+  font-style: italic;
+}
+
+.pt-popup.pt-popup--dark .pt-popup__phonetic {
+  color: #aaa;
+}
+
+.pt-popup__defs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pt-popup__defgroup {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pt-popup__pos {
+  font-size: 11px;
+  font-style: italic;
+  color: #777;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pt-popup.pt-popup--dark .pt-popup__pos {
+  color: #aaa;
+}
+
+.pt-popup__deflist {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pt-popup__defitem {
+  margin-bottom: 4px;
+}
+
+.pt-popup__defitem:last-child {
+  margin-bottom: 0;
+}
+
+.pt-popup__deftext {
+  color: inherit;
+}
+
+.pt-popup__example {
+  margin-top: 2px;
+  color: #888;
+  font-size: 11px;
+  font-style: italic;
+}
+
+.pt-popup.pt-popup--dark .pt-popup__example {
+  color: #999;
+}

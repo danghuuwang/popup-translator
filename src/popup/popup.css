@@ -81,6 +81,24 @@ body {
   color: var(--fg);
 }
 
+.pt-settings__info {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.pt-settings__info label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.pt-settings__value {
+  font-size: 12px;
+  color: var(--fg);
+}
+
 select,
 input[type="checkbox"] {
   font: inherit;

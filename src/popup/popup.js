@@ -1,36 +1,43 @@
 /**
  * Popup settings script.
- * Renders language selects, wires change handlers to chrome.storage,
- * and shows a transient "Saved" hint on every update.
+ * Renders the source-language select, wires change handlers to
+ * chrome.storage, and shows a transient "Saved" hint on every
+ * update. The target language is locked to Vietnamese; only
+ * the source is configurable.
  */
 
-const LANGUAGES = [
+const SOURCE_LANGUAGES = [
   { code: "auto", label: "Auto-detect" },
   { code: "en", label: "English" },
-  { code: "vi", label: "Vietnamese" },
-  { code: "ja", label: "Japanese" },
-  { code: "ko", label: "Korean" },
   { code: "zh", label: "Chinese (Simplified)" },
   { code: "zh-TW", label: "Chinese (Traditional)" },
+  { code: "ja", label: "Japanese" },
+  { code: "ko", label: "Korean" },
   { code: "fr", label: "French" },
   { code: "de", label: "German" },
   { code: "es", label: "Spanish" },
   { code: "ru", label: "Russian" },
   { code: "th", label: "Thai" },
   { code: "id", label: "Indonesian" },
+  { code: "vi", label: "Vietnamese" },
 ];
-
-const TARGET_LANGUAGES = LANGUAGES.filter((l) => l.code !== "auto");
 
 const KEYS = {
   sl: "pt-sl",
-  tl: "pt-tl",
   hover: "pt-hover",
+  dblclick: "pt-dblclick",
+  selection: "pt-selection",
   theme: "pt-theme",
   status: "pt-status",
 };
 
-const DEFAULTS = { sl: "auto", tl: "vi", hoverEnabled: true, theme: "system" };
+const DEFAULTS = {
+  sl: "auto",
+  hoverEnabled: true,
+  dblclickEnabled: true,
+  selectionEnabled: true,
+  theme: "system",
+};
 
 function fillSelect(selectEl, list, current) {
   selectEl.innerHTML = "";
@@ -66,9 +73,10 @@ function flashSaved() {
 
 function load() {
   chrome.storage.local.get(DEFAULTS, (items) => {
-    fillSelect(document.getElementById(KEYS.sl), LANGUAGES, items.sl);
-    fillSelect(document.getElementById(KEYS.tl), TARGET_LANGUAGES, items.tl);
+    fillSelect(document.getElementById(KEYS.sl), SOURCE_LANGUAGES, items.sl);
     document.getElementById(KEYS.hover).checked = !!items.hoverEnabled;
+    document.getElementById(KEYS.dblclick).checked = !!items.dblclickEnabled;
+    document.getElementById(KEYS.selection).checked = !!items.selectionEnabled;
     setSelectValue(document.getElementById(KEYS.theme), items.theme || "system");
   });
 }
@@ -82,11 +90,14 @@ function wire() {
     .getElementById(KEYS.sl)
     .addEventListener("change", (e) => save({ sl: e.target.value }));
   document
-    .getElementById(KEYS.tl)
-    .addEventListener("change", (e) => save({ tl: e.target.value }));
-  document
     .getElementById(KEYS.hover)
     .addEventListener("change", (e) => save({ hoverEnabled: e.target.checked }));
+  document
+    .getElementById(KEYS.dblclick)
+    .addEventListener("change", (e) => save({ dblclickEnabled: e.target.checked }));
+  document
+    .getElementById(KEYS.selection)
+    .addEventListener("change", (e) => save({ selectionEnabled: e.target.checked }));
   document
     .getElementById(KEYS.theme)
     .addEventListener("change", (e) => save({ theme: e.target.value }));
