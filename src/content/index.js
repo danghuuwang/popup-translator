@@ -574,20 +574,23 @@ function renderDictionary(payload) {
 
 /** Look up an English word in the Free Dictionary API. Skipped
  *  entirely if the word is not ASCII (Vietnamese etc.) since
- *  the API is English-only. */
+ *  the API is English-only. Trailing/leading punctuation is
+ *  stripped so 'end.' still looks up 'end'. */
 async function requestLookup(word) {
   const callId = ++inFlight;
   const clean = (word || "").trim().toLowerCase();
   if (!clean) return;
-  if (!/^[a-z'-]+$/.test(clean)) {
+  const core = clean.replace(/^[^a-z']+|[^a-z']+$/g, "");
+  if (!core || !/^[a-z'-]+$/.test(core)) {
     // Not an English word; do nothing. The user can still
     // translate it by selecting it (selection flow) or by
     // hovering the sentence (hover flow).
     hidePopup();
     return;
   }
+  const lookupWord = core;
 
-  const cached = cacheGet("\u0001DICT\u0001" + clean, "dict", "vi");
+  const cached = cacheGet("\u0001DICT\u0001" + lookupWord, "dict", "vi");
   if (cached) {
     if (callId !== inFlight) return;
     renderDictionary(cached);
@@ -597,11 +600,11 @@ async function requestLookup(word) {
   try {
     const res = await chrome.runtime.sendMessage({
       type: "lookup",
-      word: clean,
+      word: lookupWord,
     });
     if (callId !== inFlight) return;
     if (res && res.word) {
-      cachePut("\u0001DICT\u0001" + clean, "dict", "vi", res);
+      cachePut("\u0001DICT\u0001" + lookupWord, "dict", "vi", res);
     }
     renderDictionary(res || {});
   } catch (err) {
@@ -932,14 +935,17 @@ function onMouseUp(e) {
 
 /** A "single word" for the purposes of the dblclick/mouseup
  *  arbitration: ASCII letters, hyphens, and apostrophes, with
- *  no whitespace. The dictionary flow only handles English
- *  words, so this check matches what the Free Dictionary
- *  provider would accept. */
+ *  optional trailing/leading punctuation. The dictionary flow
+ *  only handles English words, so this check matches what the
+ *  Free Dictionary provider would accept. We strip the
+ *  selection to just the alphabetic core before testing. */
 function isSingleWord(s) {
   if (!s) return false;
-  if (/\s/.test(s)) return false;
   if (s.length > 40) return false;
-  return /^[a-zA-Z'-]+$/.test(s);
+  const core = s.replace(/^[^a-zA-Z']+|[^a-zA-Z']+$/g, "");
+  if (!core) return false;
+  if (/\s/.test(core)) return false;
+  return /^[a-zA-Z'-]+$/.test(core);
 }
 
 window.addEventListener("mousemove", onMouseMove, { passive: true, capture: true });
