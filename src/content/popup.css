@@ -77,15 +77,29 @@
      flex: 1 makes it grow to fill the popup height so the
      scroll surface is the full popup body, not just the
      content's natural size.
-     pointer-events: auto re-enables mouse events on the
-     scrollable area so the user can wheel-scroll inside the
-     popup; the popup's outer element stays pointer-events:
-     none so it never blocks clicks on the page underneath. */
+     padding-right gives the scrollbar its own gutter so the
+     bar does not overlap the rightmost characters of the
+     last definition line. */
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
   min-height: 0;
   flex: 1 1 auto;
+  padding-right: 10px;
+}
+
+/* Re-enable mouse events on the scrollable area only while
+   the popup is visible. The outer popup stays at
+   pointer-events: none (so it never blocks clicks on the
+   page) but the visible state promotes the trans child to
+   auto, which lets the user wheel-scroll inside the popup
+   without the wheel falling through to the page underneath.
+   When the popup fades out, this rule no longer applies and
+   the trans goes back to inheriting pointer-events: none;
+   otherwise the (invisible) popup would still capture wheel
+   events at its old position and prevent scrolling the
+   page for as long as the popup is in the DOM. */
+.pt-popup.pt-popup--visible .pt-popup__trans {
   pointer-events: auto;
   touch-action: pan-y;
 }

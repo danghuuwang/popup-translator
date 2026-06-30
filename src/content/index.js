@@ -904,27 +904,6 @@ function isSingleWord(s) {
 window.addEventListener("mousemove", onMouseMove, { passive: true, capture: true });
 setInterval(onCursorSample, POLL_MS);
 document.addEventListener("mouseup", onMouseUp);
-// Hide the popup on a click outside the popup and outside any
-// selection. Listening on mousedown (not click) means we beat the
-// page's own click handlers, and we never fire on a click that
-// landed inside our own popup (we filter below).
-document.addEventListener("mousedown", (e) => {
-  if (e.target && e.target.closest && e.target.closest("#" + POPUP_ID)) return;
-  // The mouseup handler will run after this; if it picks up a
-  // non-empty selection it will re-render the popup. We only
-  // need to hide the popup here for clicks that produced no
-  // selection at all.
-  // We delay by a tick to let the page settle the selection
-  // first, then re-check.
-  setTimeout(() => {
-    const sel =
-      (window.getSelection && window.getSelection().toString().trim()) || "";
-    if (!sel) {
-      hidePopup();
-      pinnedText = "";
-    }
-  }, 0);
-});
 
 
 loadSettings();
