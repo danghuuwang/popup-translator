@@ -59,6 +59,93 @@ let rafId = 0;
 let popupW = 320;
 let popupH = 60;
 
+/** LRU cache of recent translations. Key = text + sl + tl. We
+ *  cap at 100 entries so the cache doesn't grow without bound
+ *  during long browsing sessions. Lookup is O(1) and so is
+ *  insertion. The map preserves insertion order, so deleting
+ *  the oldest key is the first key in iteration order. */
+const CACHE_MAX = 100;
+const translationCache = new Map();
+const TARGET_LANGS = new Set([
+  "vi", "en", "zh", "zh-cn", "zh-tw", "ja", "ko", "fr", "de", "es",
+  "ru", "pt", "it", "th", "ar", "id", "hi", "tr", "pl", "nl",
+]);
+
+function cacheGet(text, sl, tl) {
+  const key = text + "\u0001" + sl + "\u0001" + tl;
+  const entry = translationCache.get(key);
+  if (!entry) return null;
+  // Refresh recency: delete + re-insert moves to the end.
+  translationCache.delete(key);
+  translationCache.set(key, entry);
+  return entry;
+}
+
+function cachePut(text, sl, tl, payload) {
+  const key = text + "\u0001" + sl + "\u0001" + tl;
+  if (translationCache.has(key)) translationCache.delete(key);
+  translationCache.set(key, payload);
+  // Evict oldest entries until we're at the cap.
+  while (translationCache.size > CACHE_MAX) {
+    const oldest = translationCache.keys().next().value;
+    translationCache.delete(oldest);
+  }
+}
+
+/** Heuristic: does the source text look like it is already in
+ *  the target language? We do a lightweight per-language
+ *  signature: presence of diacritics, scripts, common stop
+ *  words. This is intentionally simple and conservative: if the
+ *  test is unsure, we let the API decide. The Google response's
+ *  detectedSl field is the authoritative signal, but we want to
+ *  skip the request entirely when it's obvious. */
+function looksLikeTarget(text, tl) {
+  if (!text) return false;
+  const lower = text.toLowerCase();
+  switch (tl) {
+    case "vi": {
+      // Vietnamese uses many diacritics (ă, â, ê, ô, ơ, ư, đ and
+      // tone marks). A short text without any of them is almost
+      // certainly not Vietnamese.
+      if (/[ăâđêôơưĂÂĐÊÔƠƯạảấầậẹẽếềểễọỏốồộớờởỡụủứừửữỳỷỹẠẢẤẦẬẸẼẾỀỂỄỌỎỐỒỘỚỜỞỠỤỦỨỪỬỮỲỶỸ]/.test(text)) {
+        return true;
+      }
+      return false;
+    }
+    case "en": {
+      // Common English stop words. We require a couple of hits
+      // to avoid false positives on short fragments.
+      const hits = (lower.match(/\b(the|is|are|was|were|be|been|have|has|do|does|will|would|can|could|should|may|might|and|or|but|of|to|in|on|at|for|with|this|that|it|as|by)\b/g) || []).length;
+      return hits >= 2;
+    }
+    case "zh":
+    case "zh-cn":
+    case "zh-tw": {
+      return /[一-鿿]/.test(text);
+    }
+    case "ja": {
+      return /[぀-ゟ゠-ヿ㐀-䶿一-鿿]/.test(text);
+    }
+    case "ko": {
+      return /[가-힯]/.test(text);
+    }
+    case "th": {
+      return /[ก-๛]/.test(text);
+    }
+    case "ar": {
+      return /[؀-ۿݐ-ݿ]/.test(text);
+    }
+    case "ru": {
+      return /[Ѐ-ӿ]/.test(text);
+    }
+    case "hi": {
+      return /[ऀ-ॿ]/.test(text);
+    }
+    default:
+      return false;
+  }
+}
+
 console.log("[Popup Translator] content script loaded");
 
 function getPopup() {
@@ -472,14 +559,57 @@ function renderPayload(payload) {
 
 async function requestTranslation(text) {
   const callId = ++inFlight;
+  const sl = settings.sl;
+  const tl = settings.tl;
+
+  // Cache hit: render immediately, skip the network.
+  const cached = cacheGet(text, sl, tl);
+  if (cached) {
+    if (callId !== inFlight) return;
+    renderPayload(cached);
+    return;
+  }
+
+  // If the source already looks like the target language, don't
+  // hit the API. We render the source as the translation (no-op)
+  // and mark the cache so repeated hovers don't re-evaluate.
+  if (looksLikeTarget(text, tl)) {
+    const noop = {
+      translatedText: text,
+      detectedSl: tl,
+      provider: "Google",
+    };
+    cachePut(text, sl, tl, noop);
+    if (callId !== inFlight) return;
+    renderPayload(noop);
+    return;
+  }
+
   try {
     const res = await chrome.runtime.sendMessage({
       type: "translate",
       text,
-      sl: settings.sl,
-      tl: settings.tl,
+      sl,
+      tl,
     });
     if (callId !== inFlight) return;
+
+    // Server told us the source is already in the target lang.
+    // We still cache the no-op so we don't re-fetch.
+    if (res && res.detectedSl && res.detectedSl === tl && res.translatedText) {
+      const noop = {
+        translatedText: res.translatedText,
+        detectedSl: tl,
+        provider: res.provider || "Google",
+      };
+      cachePut(text, sl, tl, noop);
+      renderPayload(noop);
+      return;
+    }
+
+    if (res && res.translatedText) {
+      cachePut(text, sl, tl, res);
+    }
     renderPayload(res || {});
   } catch (err) {
     if (callId !== inFlight) return;
@@ -513,10 +643,25 @@ function onCursorSample() {
   inFlight++;
 
   if (hoverTimer) clearTimeout(hoverTimer);
+  // Snapshot the inFlight counter so the deferred callbacks can
+  // detect that a newer hover has superseded this one. inFlight
+  // was already bumped above to invalidate any earlier request.
+  const callId = inFlight;
   hoverTimer = setTimeout(() => {
+    if (callId !== inFlight) return;
     if (debounceTimer) clearTimeout(debounceTimer);
+
+    // Cache hit: skip the skeleton and the debounce, render
+    // immediately. The hover delay has already served its UX
+    // purpose of confirming the user's intent.
+    if (cacheGet(text, settings.sl, settings.tl)) {
+      requestTranslation(text);
+      return;
+    }
+
     showSkeleton(text);
     debounceTimer = setTimeout(() => {
+      if (callId !== inFlight) return;
       requestTranslation(text);
     }, DEBOUNCE_MS);
   }, HOVER_DELAY_MS);

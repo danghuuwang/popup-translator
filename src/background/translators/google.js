@@ -50,7 +50,7 @@ export async function googleTranslate({ text, sl, tl }) {
       const res = await fetch(buildUrl(client), { method: "GET" });
       if (!res.ok) throw new Error(`google http ${res.status}`);
       const data = await res.json();
-      return { ...tryParse(data, client), provider: `google:${client}` };
+      return { ...tryParse(data, client), provider: "Google" };
     } catch (err) {
       // try next client
       if (client === "dict") throw err;
