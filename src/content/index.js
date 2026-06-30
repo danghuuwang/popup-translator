@@ -410,6 +410,7 @@ function renderDictionary(payload) {
     // Definition groups.
     const list = document.createElement("div");
     list.className = "pt-popup__defs";
+    let defCounter = 0;
     for (const group of payload.entries || []) {
       if (!group.definitions || group.definitions.length === 0) continue;
       const block = document.createElement("div");
@@ -429,6 +430,21 @@ function renderDictionary(payload) {
         text.className = "pt-popup__deftext";
         text.textContent = def.text;
         li.appendChild(text);
+        // Vietnamese translation of this specific definition.
+        // Filled in by fetchDictViDefs() in the background; we
+        // set a data-index so the updater can find this exact
+        // defitem when the API call resolves.
+        const viDef = document.createElement("div");
+        viDef.className = "pt-popup__defvi pt-popup__defvi--loading";
+        viDef.dataset.role = "dict-def-vi";
+        viDef.dataset.idx = String(defCounter);
+        if (def.vi) {
+          viDef.textContent = def.vi;
+          viDef.classList.remove("pt-popup__defvi--loading");
+        } else {
+          viDef.textContent = "Đang dịch…";
+        }
+        li.appendChild(viDef);
         if (def.example) {
           const ex = document.createElement("div");
           ex.className = "pt-popup__example";
@@ -436,6 +452,7 @@ function renderDictionary(payload) {
           li.appendChild(ex);
         }
         ol.appendChild(li);
+        defCounter++;
       }
       block.appendChild(ol);
       list.appendChild(block);
@@ -478,6 +495,23 @@ function updateDictionaryVi(vi) {
   }
   viEl.textContent = vi;
   viEl.classList.remove("pt-popup__vi--loading");
+}
+
+/** Patch a Vietnamese definition translation into a single
+ *  defitem. Each defvi element has a data-idx attribute set
+ *  at render time so we can find the right one. */
+function updateDictDefVi(idx, vi) {
+  const el = getPopup();
+  const viEl = el.querySelector(
+    `[data-role="dict-def-vi"][data-idx="${idx}"]`
+  );
+  if (!viEl) return;
+  if (!vi) {
+    viEl.remove();
+    return;
+  }
+  viEl.textContent = vi;
+  viEl.classList.remove("pt-popup__defvi--loading");
 }
 
 /** Look up an English word in the Free Dictionary API. Skipped
@@ -532,11 +566,11 @@ async function requestLookup(word) {
     }
     renderDictionary(res || {});
 
-    // Fire the VI translation in the background. We do not
+    // Fire the VI translations in the background. We do not
     // await it; the user already has the English defs on
-    // screen. When the call resolves we patch the placeholder.
+    // screen. When each call resolves we patch the placeholder.
     if (res && res.word) {
-      fetchDictVi(res.word, callId);
+      fetchDictViAll(res.word, res.entries, callId);
     }
   } catch (err) {
     if (callId !== inFlight) return;
@@ -544,41 +578,83 @@ async function requestLookup(word) {
   }
 }
 
-/** Fetch the Vietnamese translation of a dictionary headword
- *  and patch it into the open popup. Cached in the LRU under
- *  the same key as the dict entry so a second double-click
- *  renders the VI line immediately. */
-async function fetchDictVi(word, callId) {
-  const cacheKey = "\u0001DICT\u0001" + word.toLowerCase();
+/** Fetch the Vietnamese translations for a dictionary entry:
+ *  one for the headword and one for each English definition.
+ *  All calls run in parallel via Promise.all. Each resolution
+ *  patches the popup in place; the user sees the English
+ *  definitions immediately and the Vietnamese lines stream in
+ *  as the calls resolve. Results are cached back into the dict
+ *  cache entry (per definition) so a re-lookup re-renders
+ *  without hitting the network. */
+async function fetchDictViAll(headword, entries, callId) {
+  const cacheKey = "\u0001DICT\u0001" + headword.toLowerCase();
   const cached = cacheGet(cacheKey, "dict", "vi");
-  if (cached && cached.vi) {
-    if (callId !== inFlight) return;
+
+  // Build the list of (idx, text) pairs that still need a
+  // translation. The headword is idx -1 (sentinel) so the
+  // updater can distinguish it from the defs.
+  const headwordCached = cached && cached.vi;
+  const tasks = [];
+  if (!headwordCached) {
+    tasks.push({ idx: -1, text: headword });
+  } else {
     updateDictionaryVi(cached.vi);
-    return;
   }
-  try {
-    const res = await chrome.runtime.sendMessage({
-      type: "translate",
-      text: word,
-      sl: "en",
-      tl: "vi",
-    });
-    if (callId !== inFlight) return;
-    if (res && res.translatedText) {
-      // Backfill the cache entry so the next double-click
-      // renders the VI line from the dict cache, not from a
-      // re-fetch.
-      const entry = cacheGet(cacheKey, "dict", "vi");
-      if (entry) {
-        entry.vi = res.translatedText;
-        cachePut(cacheKey, "dict", "vi", entry);
+  let defCounter = 0;
+  for (const group of entries || []) {
+    for (const def of group.definitions || []) {
+      if (def.vi) {
+        updateDictDefVi(defCounter, def.vi);
+      } else {
+        tasks.push({ idx: defCounter, text: def.text });
       }
-      updateDictionaryVi(res.translatedText);
+      defCounter++;
     }
-  } catch (e) {
-    // Network or extension error: leave the placeholder, the
-    // user can still read the English defs.
   }
+
+  if (tasks.length === 0) return;
+
+  // Fire all translates in parallel. A single failed call only
+  // kills its own VI line, not the others.
+  const promises = tasks.map((t) =>
+    chrome.runtime
+      .sendMessage({
+        type: "translate",
+        text: t.text,
+        sl: "en",
+        tl: "vi",
+      })
+      .then((res) => ({ idx: t.idx, vi: (res && res.translatedText) || "" }))
+      .catch(() => ({ idx: t.idx, vi: "" }))
+  );
+  const results = await Promise.all(promises);
+  if (callId !== inFlight) return;
+
+  // Patch each result into the popup and backfill the cache
+  // entry so a re-lookup skips the network.
+  const entry = cacheGet(cacheKey, "dict", "vi") || { word: headword };
+  for (const { idx, vi } of results) {
+    if (!vi) continue;
+    if (idx === -1) {
+      updateDictionaryVi(vi);
+      entry.vi = vi;
+    } else {
+      updateDictDefVi(idx, vi);
+      // Backfill the def.vi on the entry so renderDictionary
+      // can render it directly on the next cache hit.
+      let i = 0;
+      outer: for (const group of entry.entries || entries || []) {
+        for (const def of group.definitions || []) {
+          if (i === idx) {
+            def.vi = vi;
+            break outer;
+          }
+          i++;
+        }
+      }
+    }
+  }
+  cachePut(cacheKey, "dict", "vi", entry);
 }
 
 async function requestTranslation(text) {
@@ -900,6 +976,9 @@ document.addEventListener("mousedown", (e) => {
  *  re-position per frame via requestAnimationFrame. */
 let scrollRafId = 0;
 function onScroll() {
+  if (typeof __ptDebug !== "undefined" && __ptDebug) {
+    console.log("[PT] onScroll fired");
+  }
   if (scrollRafId) return;
   scrollRafId = requestAnimationFrame(() => {
     scrollRafId = 0;

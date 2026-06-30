@@ -73,12 +73,15 @@
      definitions) must scroll inside the popup; otherwise the
      popup runs off the screen. The popup itself caps at 60vh;
      the trans element fills whatever remains. min-height: 0
-     lets the flex child shrink past its content size so the
-     scroll kicks in. */
+     lets the flex child shrink past its content size, and
+     flex: 1 makes it grow to fill the popup height so the
+     scroll surface is the full popup body, not just the
+     content's natural size. */
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
   min-height: 0;
+  flex: 1 1 auto;
 }
 
 .pt-popup__trans.pt-popup__trans--ready {
@@ -216,6 +219,30 @@
 
 .pt-popup__deftext {
   color: inherit;
+}
+
+/* Vietnamese translation of a single English definition. Sits
+   right under the English text in the same li, in the same
+   accent green as the headword translation, so the user can
+   pair the two. */
+.pt-popup__defvi {
+  margin-top: 2px;
+  font-size: 12px;
+  color: #0a7d3b;
+  line-height: 1.4;
+}
+
+.pt-popup.pt-popup--dark .pt-popup__defvi {
+  color: #4ade80;
+}
+
+.pt-popup__defvi--loading {
+  color: #aaa;
+  font-style: italic;
+}
+
+.pt-popup.pt-popup--dark .pt-popup__defvi--loading {
+  color: #777;
 }
 
 .pt-popup__example {
