@@ -708,6 +708,12 @@ function onCursorSample() {
   if (!settings.hoverEnabled) return;
   if (document.visibilityState !== "visible") return;
   if (lastX === 0 && lastY === 0) return;
+  // A dblclick or selection-translate just fired. The cursor
+  // is still on top of the same text node, and the hover flow
+  // would re-translate it within a second. Suppress the hover
+  // flow for a short window so the dictionary or selection
+  // popup is not clobbered.
+  if (Date.now() < suppressHoverUntil) return;
 
   const text = extractTextAt(lastX, lastY);
   if (!text) {
@@ -765,6 +771,15 @@ function onMouseMove(e) {
  *  flicker out the moment the browser adjusts the selection. */
 let lastSelectedSource = "";
 let lastSelectedText = "";
+
+/** Hover translations are suppressed for a short window after
+ *  a dblclick or selection-based translate. Without this, the
+ *  cursor still being on top of the same text triggers the
+ *  hover flow on the next poll and overwrites the dictionary
+ *  or selection popup with a translation a few hundred ms
+ *  later. 1500ms covers the 500ms hover delay + 220ms debounce
+ *  + a typical API response. */
+let suppressHoverUntil = 0;
 
 function onSelectionChange() {
   if (!settings.selectionEnabled) return;
@@ -831,7 +846,10 @@ function onDoubleClick(e) {
     lastSelectedText = sel;
     lastSelectedSource = "dblclick";
     // Make sure the hover flow doesn't immediately overwrite the
-    // dictionary view: cancel any pending hover translation.
+    // dictionary view: cancel any pending hover translation and
+    // suppress the hover flow for a short window. The cursor is
+    // still on top of the same word, and the next onCursorSample
+    // tick would otherwise schedule a hover translation.
     if (hoverTimer) {
       clearTimeout(hoverTimer);
       hoverTimer = null;
@@ -840,6 +858,7 @@ function onDoubleClick(e) {
     lastText = "";
     lastX = e.clientX;
     lastY = e.clientY;
+    suppressHoverUntil = Date.now() + 1500;
     requestLookup(sel);
     return;
   }
@@ -896,7 +915,9 @@ function onMouseUp(e) {
   }
 
   // Cancel any in-flight hover translation so the selection
-  // view wins.
+  // view wins. Also suppress the hover flow for a short window
+  // so onCursorSample does not schedule a hover translation
+  // over the same text a moment later.
   if (hoverTimer) {
     clearTimeout(hoverTimer);
     hoverTimer = null;
@@ -905,6 +926,7 @@ function onMouseUp(e) {
   lastText = "";
   lastX = e.clientX;
   lastY = e.clientY;
+  suppressHoverUntil = Date.now() + 1500;
   requestTranslation(sel);
 }
 
