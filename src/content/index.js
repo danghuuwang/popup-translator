@@ -163,13 +163,6 @@ function showPopup() {
 function hidePopup() {
   const el = document.getElementById(POPUP_ID);
   if (!el) return;
-  if (typeof __ptDebug !== "undefined" && __ptDebug) {
-    try {
-      throw new Error("hidePopup trace");
-    } catch (e) {
-      console.log("[PT] hidePopup called from:", e.stack);
-    }
-  }
   el.classList.remove("pt-popup--visible");
   el.setAttribute("aria-hidden", "true");
 }
@@ -567,30 +560,28 @@ function onCursorSample() {
   if (document.visibilityState !== "visible") return;
   if (lastX === 0 && lastY === 0) return;
 
+  // The mouseup-selection flow is currently showing its popup.
+  // The cursor is on top of the same text, but the hover flow
+  // must NOT touch the popup. The user releases the pin by
+  // clicking outside any selection (the mousedown listener
+  // clears pinnedText on a click with no selection). Until then,
+  // the hover flow stays out of the way.
+  if (pinnedText) return;
+
   const text = extractTextAt(lastX, lastY);
   if (!text) {
-    // Cursor over empty space. Clear any pin and hide the popup.
-    pinnedText = "";
+    // Cursor over empty space. Reset lastText so the next hover
+    // into the same text node is treated as a fresh hit.
     hidePopup();
     if (hoverTimer) {
       clearTimeout(hoverTimer);
       hoverTimer = null;
     }
-    // Reset lastText so the next hover into the same text node
-    // is treated as a fresh hit. Without this, hovering away
-    // and back onto identical text would early-return on the
-    // "text === lastText" guard and never show the popup again.
     lastText = "";
     return;
   }
   if (text === lastText) return;
   lastText = text;
-
-  // The cursor is still on the same text that the dblclick or
-  // selection flow just pinned. The hover flow would re-translate
-  // the same text and clobber the dictionary/selection popup.
-  // Stay pinned until the cursor moves to a different text.
-  if (pinnedText && text === pinnedText) return;
 
   hidePopup();
   inFlight++;
@@ -602,17 +593,10 @@ function onCursorSample() {
   const callId = inFlight;
   hoverTimer = setTimeout(() => {
     if (callId !== inFlight) return;
-    // Re-check the pin: the user may have moved the cursor
-    // onto the pinned text between scheduling and firing.
+    // Re-check the pin: the user may have made a selection
+    // between scheduling and firing.
     if (pinnedText) return;
     if (debounceTimer) clearTimeout(debounceTimer);
-    // No skeleton: the popup is shown only when there is real
-    // content to display (a translated string from the API, or
-    // a cached entry). The 500ms hover delay is enough of a
-    // "this is what I'm reading" signal on its own; a flashing
-    // skeleton would just be noise during the brief request
-    // window, and it makes the target-language skip path look
-    // broken (skeleton appears, then vanishes).
     debounceTimer = setTimeout(() => {
       if (callId !== inFlight) return;
       if (pinnedText) return;
@@ -627,40 +611,19 @@ function onMouseMove(e) {
   positionPopup(lastX, lastY);
 }
 
-/** Source of the last selection update. The popup should only
- *  be hidden on deselect when the previous selection was made
- *  via the selection-translate flow (mouseup). A dblclick sets
- *  this to 'dblclick' and the selectionchange handler then
- *  leaves the popup alone, so the dictionary view does not
- *  flicker out the moment the browser adjusts the selection. */
-let lastSelectedSource = "";
+/** Text the popup was last shown for, either by the hover flow
+ *  or by a mouseup selection. Used to suppress duplicate
+ *  lookups when the user releases the mouse on text we already
+ *  translated. */
 let lastSelectedText = "";
 
-/** Text the popup is "pinned" to after a dblclick or
- *  selection-translate. While pinned, the hover flow refuses
- *  to translate this text (the cursor is still on top of it
- *  and would otherwise schedule a translation a moment later
- *  that overwrites the dictionary/selection popup). The pin
- *  is cleared as soon as the cursor moves to a different text
- *  or onto empty space. */
+/** Text the popup is "pinned" to after a mouseup selection.
+ *  While pinned, the hover flow refuses to translate this
+ *  text (the cursor is still on top of it and would otherwise
+ *  schedule a translation a moment later that overwrites the
+ *  popup). The pin is cleared when the user clicks outside
+ *  any selection. */
 let pinnedText = "";
-
-function onSelectionChange() {
-  if (!settings.selectionEnabled) return;
-  if (lastSelectedSource !== "mouseup") return;
-  // selectionchange fires for many reasons: user drag, page
-  // script moving the selection, focus shift. We use it only
-  // to hide the popup on deselect. Translation is triggered
-  // from mouseup, not from this event, to avoid double-firing.
-  const sel =
-    (window.getSelection && window.getSelection().toString().trim()) || "";
-  if (!sel && lastSelectedText) {
-    lastSelectedText = "";
-    lastSelectedSource = "";
-    pinnedText = "";
-    hidePopup();
-  }
-}
 
 function loadSettings() {
   try {
@@ -695,60 +658,7 @@ try {
   });
 } catch (e) {}
 
-function onDoubleClick(e) {
-  if (!settings.dblclickEnabled) return;
-  if (document.visibilityState !== "visible") return;
-  // Use the current selection (the browser has just selected the
-  // double-clicked word). Fall back to looking up the text node
-  // at the click position if for some reason the selection is
-  // empty.
-  const sel =
-    (window.getSelection && window.getSelection().toString().trim()) || "";
-  if (sel) {
-    // Tag the selection as 'dblclick' so the selectionchange
-    // handler does not hide the dictionary popup when the
-    // browser adjusts the selection right after the dblclick.
-    lastSelectedText = sel;
-    lastSelectedSource = "dblclick";
-    // Pin the popup to this text so the hover flow does not
-    // re-translate it. The pin is cleared when the cursor moves
-    // to a different text or onto empty space.
-    pinnedText = sel;
-    // Make sure the hover flow doesn't immediately overwrite the
-    // dictionary view: cancel any pending hover translation.
-    if (hoverTimer) {
-      clearTimeout(hoverTimer);
-      hoverTimer = null;
-    }
-    inFlight++;
-    lastText = "";
-    lastX = e.clientX;
-    lastY = e.clientY;
-    requestLookup(sel);
-    return;
-  }
-  const r = document.caretRangeFromPoint && document.caretRangeFromPoint(e.clientX, e.clientY);
-  if (r && r.startContainer.nodeType === Node.TEXT_NODE) {
-    const word = (r.startContainer.nodeValue || "").trim();
-    if (word) {
-      lastSelectedText = word;
-      lastSelectedSource = "dblclick";
-      pinnedText = word;
-      if (hoverTimer) {
-        clearTimeout(hoverTimer);
-        hoverTimer = null;
-      }
-      inFlight++;
-      lastText = "";
-      lastX = e.clientX;
-      lastY = e.clientY;
-      requestLookup(word);
-    }
-  }
-}
-
 function onMouseUp(e) {
-  if (!settings.selectionEnabled) return;
   if (document.visibilityState !== "visible") return;
   // Skip if this mouseup is on our own popup (don't re-trigger
   // when the user clicks inside the translated popup).
@@ -760,43 +670,18 @@ function onMouseUp(e) {
   if (!sel) {
     // Selection collapsed or empty: the user is not selecting
     // anything. Hide the popup so it does not linger after a
-    // deselect.
-    if (lastSelectedText) {
-      lastSelectedText = "";
-      hidePopup();
-    }
+    // click on empty space.
+    hidePopup();
+    pinnedText = "";
     return;
   }
+  if (sel.length < MIN_TEXT_LEN || sel.length > MAX_TEXT_LEN) return;
   if (sel === lastSelectedText) return;
   lastSelectedText = sel;
-  if (sel.length < MIN_TEXT_LEN || sel.length > MAX_TEXT_LEN) return;
 
-  // A double-click is a pair of clicks: mouseup fires for the
-  // second click BEFORE the dblclick event. If the selection is
-  // a single word and dblclick is enabled, defer to the dblclick
-  // flow by NOT marking this as a 'mouseup' selection (which
-  // would let selectionchange hide the dictionary popup when
-  // the browser clears the click selection a moment later).
-  if (settings.dblclickEnabled && isSingleWord(sel)) {
-    lastSelectedSource = "";
-    return;
-  }
-
-  lastSelectedSource = "mouseup";
-
-  // When the user double-clicks a single word, the browser also
-  // fires a mouseup for the second click of the pair. We don't
-  // want the selection view to race the dictionary view: if
-  // dblclick is enabled and the selection is a single ASCII
-  // token, defer to the dictionary flow. The user will see the
-  // popup render with definitions instead of a translation.
-  if (settings.dblclickEnabled && isSingleWord(sel)) {
-    return;
-  }
-
-  // Cancel any in-flight hover translation so the selection
-  // view wins. Pin the popup to the selected text so the hover
-  // flow does not re-translate it on the next cursor poll.
+  // Cancel any in-flight hover translation so the selection view
+  // wins. Pin the popup to the selected text so the hover flow
+  // does not re-translate it on the next cursor poll.
   if (hoverTimer) {
     clearTimeout(hoverTimer);
     hoverTimer = null;
@@ -806,7 +691,14 @@ function onMouseUp(e) {
   lastX = e.clientX;
   lastY = e.clientY;
   pinnedText = sel;
-  requestTranslation(sel);
+
+  // Single ASCII word + dblclick enabled => dictionary lookup.
+  // Multi-word selection => translation.
+  if (settings.dblclickEnabled && isSingleWord(sel)) {
+    requestLookup(sel);
+  } else if (settings.selectionEnabled) {
+    requestTranslation(sel);
+  }
 }
 
 /** A "single word" for the purposes of the dblclick/mouseup
@@ -826,11 +718,27 @@ function isSingleWord(s) {
 
 window.addEventListener("mousemove", onMouseMove, { passive: true, capture: true });
 setInterval(onCursorSample, POLL_MS);
-document.addEventListener("dblclick", onDoubleClick);
 document.addEventListener("mouseup", onMouseUp);
-// selectionchange is also listened to so we can hide the popup
-// the moment the user deselects (clears the selection by clicking
-// elsewhere or pressing an arrow key).
-document.addEventListener("selectionchange", onSelectionChange);
+// Hide the popup on a click outside the popup and outside any
+// selection. Listening on mousedown (not click) means we beat the
+// page's own click handlers, and we never fire on a click that
+// landed inside our own popup (we filter below).
+document.addEventListener("mousedown", (e) => {
+  if (e.target && e.target.closest && e.target.closest("#" + POPUP_ID)) return;
+  // The mouseup handler will run after this; if it picks up a
+  // non-empty selection it will re-render the popup. We only
+  // need to hide the popup here for clicks that produced no
+  // selection at all.
+  // We delay by a tick to let the page settle the selection
+  // first, then re-check.
+  setTimeout(() => {
+    const sel =
+      (window.getSelection && window.getSelection().toString().trim()) || "";
+    if (!sel) {
+      hidePopup();
+      pinnedText = "";
+    }
+  }, 0);
+});
 
 loadSettings();
