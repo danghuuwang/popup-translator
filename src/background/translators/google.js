@@ -33,17 +33,19 @@ export async function googleTranslate({ text, sl, tl }) {
       if (!translated) throw new Error("google: empty gtx translation");
       return { translatedText: translated, detectedSl };
     }
-    // client=dict shape: [[[src, dst, ...], ...]] or [src, dst, ...].
-    // The dict endpoint doesn't return a language-detection field,
-    // so detectedSl is null here. Callers fall back to comparing
-    // translatedText with the source to detect same-language hits.
+    // client=dict shape: [[[src, dst, ...], ...], null, detectedSl, ...].
+    // The slot at data[2] is the detected source language, same
+    // convention as the gtx client. Parse it so callers can
+    // detect same-language hits (e.g. target=vi and detected=vi).
     if (Array.isArray(data) && data[0]) {
       const translated = data[0]
         .map((row) => (Array.isArray(row) ? row[1] ?? row[0] : ""))
         .filter(Boolean)
         .join("");
       if (!translated) throw new Error("google: empty dict translation");
-      return { translatedText: translated, detectedSl: null };
+      const detectedSl =
+        typeof data[2] === "string" && data[2].length > 0 ? data[2] : null;
+      return { translatedText: translated, detectedSl };
     }
     throw new Error("google: invalid dict response");
   };

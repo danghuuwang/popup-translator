@@ -93,6 +93,30 @@ function cachePut(text, sl, tl, payload) {
   }
 }
 
+/** Jaccard similarity over whitespace-separated word tokens,
+ *  case-folded. Used as a fallback same-language detector when
+ *  Google returns a paraphrase of the source (e.g. target=vi and
+ *  the source is already Vietnamese). A 0.5 threshold catches a
+ *  single-clause paraphrase that shares most of its words. */
+function jaccardWords(a, b) {
+  if (!a || !b) return 0;
+  const tok = (s) =>
+    new Set(
+      s
+        .toLowerCase()
+        .replace(/[.,!?;:"'\u2018\u2019\u201C\u201D()\[\]{}]/g, " ")
+        .split(/\s+/)
+        .filter(Boolean)
+    );
+  const A = tok(a);
+  const B = tok(b);
+  if (A.size === 0 || B.size === 0) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter++;
+  const union = A.size + B.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
 console.log("[Popup Translator] content script loaded");
 
 function getPopup() {
@@ -534,19 +558,33 @@ async function requestTranslation(text) {
     if (callId !== inFlight) return;
 
     // Skip path: server tells us the source is already in the
-    // target language. We also skip when the server returned
-    // the source text verbatim as the translation: that means
-    // Google could not produce a different string, which is
-    // strong evidence the source is already in the target
-    // language. The detectedSl field is the primary signal,
-    // but it can be wrong for short fragments or domain-
-    // specific text, so the verbatim match is a useful backup.
+    // target language. We honour three signals, in priority:
+    //
+    //   1. detectedSl === tl. The most authoritative signal.
+    //      Google can be wrong on short fragments or domain-
+    //      specific text, so this is not enough on its own.
+    //
+    //   2. Verbatim match. translatedText is byte-equal to the
+    //      source. This means Google had nothing to translate.
+    //
+    //   3. High similarity. The translation is a paraphrase of
+    //      the source, e.g. "So sánh hai đối tượng..." vs
+    //      "So sánh là hành động...". The two strings are
+    //      recognisably the same sentence, so the source is
+    //      already in the target language. We compute a quick
+    //      Jaccard similarity over word tokens. Threshold 0.5
+    //      catches a paraphrase with one or two words changed.
     const detected = (res && res.detectedSl) || "";
     const translated = (res && res.translatedText) || "";
     const isTargetByLang =
       detected && (detected === tl || detected.startsWith(tl + "-"));
     const isTargetByText = translated && translated.trim() === text.trim();
-    const isTarget = isTargetByLang || isTargetByText;
+    const isTargetBySim = isTargetByLang
+      ? false
+      : translated
+        ? jaccardWords(text, translated) >= 0.5
+        : false;
+    const isTarget = isTargetByLang || isTargetByText || isTargetBySim;
     if (typeof __ptDebug !== "undefined" && __ptDebug) {
       console.log("[PT] response", {
         text,
