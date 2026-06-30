@@ -95,8 +95,8 @@ function cachePut(text, sl, tl, payload) {
 /** Heuristic: does the source text look like it is already in
  *  the target language? We do a lightweight per-language
  *  signature: presence of diacritics, scripts, common stop
- *  words. This is intentionally simple and conservative: if the
- *  test is unsure, we let the API decide. The Google response's
+ *  words. This is intentionally conservative: if the test is
+ *  unsure, we let the API decide. The Google response's
  *  detectedSl field is the authoritative signal, but we want to
  *  skip the request entirely when it's obvious. */
 function looksLikeTarget(text, tl) {
@@ -104,13 +104,19 @@ function looksLikeTarget(text, tl) {
   const lower = text.toLowerCase();
   switch (tl) {
     case "vi": {
-      // Vietnamese uses many diacritics (ă, â, ê, ô, ơ, ư, đ and
-      // tone marks). A short text without any of them is almost
-      // certainly not Vietnamese.
-      if (/[ăâđêôơưĂÂĐÊÔƠƯạảấầậẹẽếềểễọỏốồộớờởỡụủứừửữỳỷỹẠẢẤẦẬẸẼẾỀỂỄỌỎỐỒỘỚỜỞỠỤỦỨỪỬỮỲỶỸ]/.test(text)) {
-        return true;
-      }
-      return false;
+      // Vietnamese without any diacritic is not Vietnamese at
+      // all, so a single letter is enough to confirm. A short
+      // fragment like "ok" or "vn" has zero diacritics, so we
+      // fall back to the stop-word test.
+      const hasDiacritic =
+        /[ăâđêôơưĂÂĐÊÔƠƯạảấầậẹẽếềểễọỏốồộớờởỡụủứừửữỳỷỹẠẢẤẦẬẸẼẾỀỂỄỌỎỐỒỘỚỜỞỠỤỦỨỪỬỮỲỶỸ]/.test(text);
+      if (hasDiacritic) return true;
+      const stopHits = (
+        lower.match(
+          /\b(là|của|và|trong|không|có|được|những|cho|rằng|thì|mà|đã|với|từ|này|đó|khi|như|hay|để)\b/g
+        ) || []
+      ).length;
+      return stopHits >= 1;
     }
     case "en": {
       // Common English stop words. We require a couple of hits
