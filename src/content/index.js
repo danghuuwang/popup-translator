@@ -711,15 +711,11 @@ function onCursorSample() {
   if (!settings.hoverEnabled) return;
   if (document.visibilityState !== "visible") return;
   if (lastX === 0 && lastY === 0) return;
-  // A dblclick or selection-translate just fired. The cursor
-  // is still on top of the same text node, and the hover flow
-  // would re-translate it within a second. Suppress the hover
-  // flow for a short window so the dictionary or selection
-  // popup is not clobbered.
-  if (Date.now() < suppressHoverUntil) return;
 
   const text = extractTextAt(lastX, lastY);
   if (!text) {
+    // Cursor over empty space. Clear any pin and hide the popup.
+    pinnedText = "";
     hidePopup();
     if (hoverTimer) {
       clearTimeout(hoverTimer);
@@ -735,6 +731,12 @@ function onCursorSample() {
   if (text === lastText) return;
   lastText = text;
 
+  // The cursor is still on the same text that the dblclick or
+  // selection flow just pinned. The hover flow would re-translate
+  // the same text and clobber the dictionary/selection popup.
+  // Stay pinned until the cursor moves to a different text.
+  if (pinnedText && text === pinnedText) return;
+
   hidePopup();
   inFlight++;
 
@@ -745,6 +747,9 @@ function onCursorSample() {
   const callId = inFlight;
   hoverTimer = setTimeout(() => {
     if (callId !== inFlight) return;
+    // Re-check the pin: the user may have moved the cursor
+    // onto the pinned text between scheduling and firing.
+    if (pinnedText) return;
     if (debounceTimer) clearTimeout(debounceTimer);
     // No skeleton: the popup is shown only when there is real
     // content to display (a translated string from the API, or
@@ -755,6 +760,7 @@ function onCursorSample() {
     // broken (skeleton appears, then vanishes).
     debounceTimer = setTimeout(() => {
       if (callId !== inFlight) return;
+      if (pinnedText) return;
       requestTranslation(text);
     }, DEBOUNCE_MS);
   }, HOVER_DELAY_MS);
@@ -775,14 +781,14 @@ function onMouseMove(e) {
 let lastSelectedSource = "";
 let lastSelectedText = "";
 
-/** Hover translations are suppressed for a short window after
- *  a dblclick or selection-based translate. Without this, the
- *  cursor still being on top of the same text triggers the
- *  hover flow on the next poll and overwrites the dictionary
- *  or selection popup with a translation a few hundred ms
- *  later. 1500ms covers the 500ms hover delay + 220ms debounce
- *  + a typical API response. */
-let suppressHoverUntil = 0;
+/** Text the popup is "pinned" to after a dblclick or
+ *  selection-translate. While pinned, the hover flow refuses
+ *  to translate this text (the cursor is still on top of it
+ *  and would otherwise schedule a translation a moment later
+ *  that overwrites the dictionary/selection popup). The pin
+ *  is cleared as soon as the cursor moves to a different text
+ *  or onto empty space. */
+let pinnedText = "";
 
 function onSelectionChange() {
   if (!settings.selectionEnabled) return;
@@ -796,6 +802,7 @@ function onSelectionChange() {
   if (!sel && lastSelectedText) {
     lastSelectedText = "";
     lastSelectedSource = "";
+    pinnedText = "";
     hidePopup();
   }
 }
@@ -848,11 +855,12 @@ function onDoubleClick(e) {
     // browser adjusts the selection right after the dblclick.
     lastSelectedText = sel;
     lastSelectedSource = "dblclick";
+    // Pin the popup to this text so the hover flow does not
+    // re-translate it. The pin is cleared when the cursor moves
+    // to a different text or onto empty space.
+    pinnedText = sel;
     // Make sure the hover flow doesn't immediately overwrite the
-    // dictionary view: cancel any pending hover translation and
-    // suppress the hover flow for a short window. The cursor is
-    // still on top of the same word, and the next onCursorSample
-    // tick would otherwise schedule a hover translation.
+    // dictionary view: cancel any pending hover translation.
     if (hoverTimer) {
       clearTimeout(hoverTimer);
       hoverTimer = null;
@@ -861,7 +869,6 @@ function onDoubleClick(e) {
     lastText = "";
     lastX = e.clientX;
     lastY = e.clientY;
-    suppressHoverUntil = Date.now() + 1500;
     requestLookup(sel);
     return;
   }
@@ -918,9 +925,8 @@ function onMouseUp(e) {
   }
 
   // Cancel any in-flight hover translation so the selection
-  // view wins. Also suppress the hover flow for a short window
-  // so onCursorSample does not schedule a hover translation
-  // over the same text a moment later.
+  // view wins. Pin the popup to the selected text so the hover
+  // flow does not re-translate it on the next cursor poll.
   if (hoverTimer) {
     clearTimeout(hoverTimer);
     hoverTimer = null;
@@ -929,7 +935,7 @@ function onMouseUp(e) {
   lastText = "";
   lastX = e.clientX;
   lastY = e.clientY;
-  suppressHoverUntil = Date.now() + 1500;
+  pinnedText = sel;
   requestTranslation(sel);
 }
 
