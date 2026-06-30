@@ -48,6 +48,11 @@
   transition: opacity 140ms ease;
   white-space: nowrap;
   letter-spacing: 0.02em;
+  /* The popup uses flexbox column; without flex-shrink: 0 the
+     provider chip gets squashed when the dict content scrolls
+     inside the popup. The chip is a fixed-height pill, so it
+     should never shrink. */
+  flex-shrink: 0;
 }
 
 .pt-popup__provider.pt-popup__provider--ready {

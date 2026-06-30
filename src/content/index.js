@@ -519,6 +519,17 @@ async function requestLookup(word) {
     if (res && res.word) {
       cachePut("\u0001DICT\u0001" + lookupWord, "dict", "vi", res);
     }
+    // 404 from the dict API means the word is not in the
+    // English dictionary. The popup would just show a
+    // "dictionary: 404" error string, which is noise — the
+    // user did not get a definition, they got a failure.
+    // Hide the popup entirely so the UI does not get in the
+    // way. The user can still get a translation by selecting
+    // the word with the selection flow.
+    if (res && res.error && /404/.test(res.error)) {
+      hidePopup();
+      return;
+    }
     renderDictionary(res || {});
 
     // Fire the VI translation in the background. We do not
@@ -894,6 +905,9 @@ function onScroll() {
     scrollRafId = 0;
     const el = document.getElementById(POPUP_ID);
     if (!el || !el.classList.contains("pt-popup--visible")) return;
+    if (typeof __ptDebug !== "undefined" && __ptDebug) {
+      console.log("[PT] scroll: visible, dictAnchor=", !!dictAnchor, "translateAnchor=", !!translateAnchor);
+    }
 
     if (dictAnchor) {
       // Dictionary view: re-anchor to the selected word's
