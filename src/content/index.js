@@ -499,6 +499,11 @@ function onCursorSample() {
       clearTimeout(hoverTimer);
       hoverTimer = null;
     }
+    // Reset lastText so the next hover into the same text node
+    // is treated as a fresh hit. Without this, hovering away
+    // and back onto identical text would early-return on the
+    // "text === lastText" guard and never show the popup again.
+    lastText = "";
     return;
   }
   if (text === lastText) return;
