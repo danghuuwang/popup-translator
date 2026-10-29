@@ -35,18 +35,50 @@ const POLL_MS = 200;
 const DEBOUNCE_MS = 220;
 const HOVER_DELAY_MS = 500;
 const MIN_TEXT_LEN = 2;
-const MAX_TEXT_LEN = 500;
+const MAX_TEXT_LEN = 1000;
 const POPUP_OFFSET_Y = 14;
 const POPUP_GUTTER = 8;
 const POPUP_ID = "__pt_popup_root__";
 
-/** @type {{sl: string, hoverEnabled: boolean, dblclickEnabled: boolean, selectionEnabled: boolean, theme: 'light'|'dark'|'system'}} */
+// Languages written right-to-left. Matches the original extension,
+// which sets dir=rtl for these target/source languages.
+const RTL_LANGS = ["ar", "iw", "ku", "fa", "ur", "yi"];
+
+// Noise filter from the original extension (module 1542 default l(e)).
+// Returns true when the string contains at least one letter-like char.
+// Pure digits/symbols/punctuation are treated as noise and rejected.
+const LETTER_RE =
+  /[^\s\d»«…~`!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?\$\xA2-\xA5\u058F\u060B\u09F2\u09F3\u09FB\u0AF1\u0BF9\u0E3F\u17DB\u20A0-\u20BD\uA838\uFDFC\uFE69\uFF04\uFFE0\uFFE1\uFFE5\uFFE6]/;
+
+/** Collapse whitespace and trim. Local equivalent of original l(e) preprocessing. */
+function cleanText(s) {
+  return (s || "").replace(/\s+/g, " ").trim();
+}
+
+/** True when text is usable for translation; false for empty/too-long/noise. */
+function isTranslatable(raw) {
+  const text = cleanText(raw);
+  if (!text) return false;
+  if (text.length > MAX_TEXT_LEN) return false;
+  if (text.length <= 1) return false;
+  if (!LETTER_RE.test(text)) return false;
+  return true;
+}
+
+/** Classes whose whole container should be selected (video captions, OCR overlays). */
+const CONTAINER_CLASSES = ["ytp-caption-segment", "LC20lb", "ocr_text_div"];
+
+/** @type {{sl: string, hoverEnabled: boolean, dblclickEnabled: boolean, selectionEnabled: boolean, theme: 'light'|'dark'|'system', detectType: 'sentence'|'word'|'container', reverseTarget: string, excludeList: string[], translatorVendor: string}} */
 let settings = {
   sl: "auto",
   hoverEnabled: true,
   dblclickEnabled: true,
   selectionEnabled: true,
   theme: "system",
+  detectType: "sentence",
+  reverseTarget: "null",
+  excludeList: [],
+  translatorVendor: "google",
 };
 
 // Target language is hard-coded to Vietnamese. The extension is
@@ -243,6 +275,27 @@ function extractTextAt(x, y) {
     }
   }
 
+  // Container/special-class branch (matches original): when the user
+  // opted into container detection, or the hovered element is a
+  // caption/OCR container, select the whole container instead of
+  // expanding word/sentence inside a single text node.
+  const hostEl =
+    (r.startContainer.parentElement) || null;
+  const inSpecialContainer =
+    hostEl &&
+    hostEl.classList &&
+    CONTAINER_CLASSES.some((c) => hostEl.classList.contains(c));
+  if (settings.detectType === "container" || inSpecialContainer) {
+    const container = (hostEl && hostEl.closest && (
+      hostEl.closest(".ytp-caption-segment,.LC20lb,.ocr_text_div") || hostEl
+    )) || null;
+    if (container) {
+      const text = cleanText(container.textContent || "");
+      if (!isTranslatable(text)) return "";
+      return text.length > MAX_TEXT_LEN ? text.slice(0, MAX_TEXT_LEN) : text;
+    }
+  }
+
   // Try to expand the range to the surrounding sentence. Chrome
   // supports Range.expand("sentence") and treats the result as
   // one logical unit. When the sentence lives inside a single
@@ -252,21 +305,22 @@ function extractTextAt(x, y) {
   // inside the current text node; the multi-node case is a known
   // limitation of the native API that the reference extension
   // (cflakfhockilljdbofnanaijpmpmfcol) accepts as well.
+  const expandMode = settings.detectType === "word" ? "word" : "sentence";
   const sentenceRange = r.cloneRange();
   try {
-    sentenceRange.expand("sentence");
+    sentenceRange.expand(expandMode);
   } catch (e) {
     // Some pages throw if the range is detached; fall through.
   }
   let text = sentenceRange.toString();
   // Collapse runs of whitespace so a sentence that spans a line
   // break still reads as a single sentence.
-  text = text.replace(/\s+/g, " ").trim();
-  if (text.length < MIN_TEXT_LEN) {
+  text = cleanText(text);
+  if (!isTranslatable(text)) {
     // The sentence expansion may have ended up empty or single-
     // character; fall back to the caret's text node as-is.
-    text = (r.startContainer.nodeValue || "").trim();
-    if (text.length < MIN_TEXT_LEN) return "";
+    text = cleanText(r.startContainer.nodeValue || "");
+    if (!isTranslatable(text)) return "";
   }
   if (text.length > MAX_TEXT_LEN) return text.slice(0, MAX_TEXT_LEN);
   return text;
@@ -305,6 +359,11 @@ function renderPayload(payload) {
   const el = getPopup();
   const provider = el.querySelector(".pt-popup__provider");
   const trans = el.querySelector(".pt-popup__trans");
+
+  // RTL handling (matches original): rtl target languages render
+  // the popup with dir=rtl, otherwise ltr.
+  const effTl = (payload && payload.targetLang) || TARGET_LANG;
+  el.setAttribute("dir", RTL_LANGS.includes(effTl) ? "rtl" : "ltr");
 
   // Reset trans to a clean text container.
   while (trans.firstChild) trans.removeChild(trans.firstChild);
@@ -641,10 +700,10 @@ async function fetchDictViAll(headword, entries, callId) {
   cachePut(cacheKey, "dict", "vi", entry);
 }
 
-async function requestTranslation(text) {
+async function requestTranslation(text, overrideTl) {
   const callId = ++inFlight;
   const sl = settings.sl;
-  const tl = TARGET_LANG;
+  const tl = overrideTl || TARGET_LANG;
 
   // Cache hit: render immediately, skip the network.
   const cached = cacheGet(text, sl, tl);
@@ -664,47 +723,76 @@ async function requestTranslation(text) {
   try {
     const res = await chrome.runtime.sendMessage({
       type: "translate",
+      word: text,
       text,
-      sl,
+      translateTarget: tl,
       tl,
+      sl,
     });
     if (callId !== inFlight) return;
 
-    // Skip path: server tells us the source is already in the
-    // target language. We honour three signals, in priority:
-    //
-    //   1. detectedSl === tl. The most authoritative signal.
-    //      Google can be wrong on short fragments or domain-
-    //      specific text, so this is not enough on its own.
-    //
-    //   2. Verbatim match. translatedText is byte-equal to the
-    //      source. This means Google had nothing to translate.
-    //
-    //   3. High similarity. The translation is a paraphrase of
-    //      the source, e.g. "So sánh hai đối tượng..." vs
-    //      "So sánh là hành động...". The two strings are
-    //      recognisably the same sentence, so the source is
-    //      already in the target language. We compute a quick
-    //      Jaccard similarity over word tokens. Threshold 0.5
-    //      catches a paraphrase with one or two words changed.
-    const detected = (res && res.detectedSl) || "";
+    // Hide logic (matches original): exact same-language check first.
+    // If target equals the detected source language, either retry once
+    // with reverseTarget or hide. An exclude list hides listed languages.
+    // Jaccard similarity is only a fallback when detection is empty.
+    const detected =
+      (res && (res.detectedSl || res.detectedLang || res.sourceLang)) || "";
     const translated = (res && res.translatedText) || "";
-    const isTargetByLang =
-      detected && (detected === tl || detected.startsWith(tl + "-"));
+    const normDetected = detected ? detected.split("-")[0].toLowerCase() : "";
+    const normTl = tl.split("-")[0].toLowerCase();
+    const isSameLang = !!normDetected && normDetected === normTl;
+    if (isSameLang) {
+      if (
+        !overrideTl &&
+        settings.reverseTarget &&
+        settings.reverseTarget !== "null" &&
+        settings.reverseTarget !== ""
+      ) {
+        // Retry once with the reverse target language.
+        inFlight++;
+        requestTranslation(text, settings.reverseTarget);
+        return;
+      }
+      const noop = {
+        translatedText: text,
+        detectedSl: detected,
+        provider: (res && res.provider) || "Google",
+        noop: true,
+      };
+      cachePut(text, sl, tl, noop);
+      hidePopup();
+      return;
+    }
+    if (
+      normDetected &&
+      Array.isArray(settings.excludeList) &&
+      settings.excludeList.map((s) => String(s).toLowerCase()).includes(normDetected)
+    ) {
+      const noop = {
+        translatedText: text,
+        detectedSl: detected,
+        provider: (res && res.provider) || "Google",
+        noop: true,
+      };
+      cachePut(text, sl, tl, noop);
+      hidePopup();
+      return;
+    }
+    // Fallbacks when detection is empty: verbatim match or high
+    // Jaccard similarity implies the source is already in target.
     const isTargetByText = translated && translated.trim() === text.trim();
-    const isTargetBySim = isTargetByLang
-      ? false
-      : translated
+    const isTargetBySim =
+      !normDetected && translated
         ? jaccardWords(text, translated) >= 0.5
         : false;
-    const isTarget = isTargetByLang || isTargetByText || isTargetBySim;
+    const isTarget = isTargetByText || isTargetBySim;
     if (typeof __ptDebug !== "undefined" && __ptDebug) {
       console.log("[PT] response", {
         text,
         tl,
         detected,
         translated,
-        isTargetByLang,
+        isSameLang,
         isTargetByText,
         isTarget,
       });
@@ -819,6 +907,10 @@ function loadSettings() {
         dblclickEnabled: true,
         selectionEnabled: true,
         theme: "system",
+        detectType: "sentence",
+        reverseTarget: "null",
+        excludeList: [],
+        translatorVendor: "google",
       },
       (items) => {
         if (chrome.runtime.lastError) return;

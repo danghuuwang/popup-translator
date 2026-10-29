@@ -24,6 +24,7 @@ const SOURCE_LANGUAGES = [
 
 const KEYS = {
   sl: "pt-sl",
+  vendor: "pt-vendor",
   hover: "pt-hover",
   dblclick: "pt-dblclick",
   selection: "pt-selection",
@@ -33,6 +34,7 @@ const KEYS = {
 
 const DEFAULTS = {
   sl: "auto",
+  translatorVendor: "google",
   hoverEnabled: true,
   dblclickEnabled: true,
   selectionEnabled: true,
@@ -74,6 +76,10 @@ function flashSaved() {
 function load() {
   chrome.storage.local.get(DEFAULTS, (items) => {
     fillSelect(document.getElementById(KEYS.sl), SOURCE_LANGUAGES, items.sl);
+    setSelectValue(
+      document.getElementById(KEYS.vendor),
+      items.translatorVendor || "google"
+    );
     document.getElementById(KEYS.hover).checked = !!items.hoverEnabled;
     document.getElementById(KEYS.dblclick).checked = !!items.dblclickEnabled;
     document.getElementById(KEYS.selection).checked = !!items.selectionEnabled;
@@ -89,6 +95,11 @@ function wire() {
   document
     .getElementById(KEYS.sl)
     .addEventListener("change", (e) => save({ sl: e.target.value }));
+  document
+    .getElementById(KEYS.vendor)
+    .addEventListener("change", (e) =>
+      save({ translatorVendor: e.target.value })
+    );
   document
     .getElementById(KEYS.hover)
     .addEventListener("change", (e) => save({ hoverEnabled: e.target.checked }));
